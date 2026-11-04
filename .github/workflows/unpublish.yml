@@ -1,0 +1,22 @@
+name: Unpublish Wine
+
+# Deletes a release (and its tag) so Conversio stops downloading it, e.g. a build that turned out broken.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to delete, e.g. cx26.3.0-1
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  unpublish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: gh release delete "${{ inputs.tag }}" --yes --cleanup-tag
