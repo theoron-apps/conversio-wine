@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to delete, e.g. cx26.3.0-1
+        description: Release tag to delete, e.g. cx26.3.0-1-b1
         required: true
         type: string
 

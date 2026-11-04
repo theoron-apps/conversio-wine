@@ -39,8 +39,10 @@ jobs:
           VERSION=${VERSION%-x86_64}                # 26.3.0-1
           CX_VER=${VERSION%-*}
           REVISION=${VERSION##*-}
-          TAG="cx${VERSION}"
           SHA=$(gh run view "${{ inputs.run_id }}" --json headSha -q .headSha)
+          # Tags are unique per build: deleted releases can't give their tag to a new one.
+          BUILD_NUMBER=$(gh run view "${{ inputs.run_id }}" --json number -q .number)
+          TAG="cx${VERSION}-b${BUILD_NUMBER}"
 
           # LGPL: ship the exact sources next to the build.
           curl -fL --retry 3 -o "dist/crossover-sources-${CX_VER}.tar.gz" \
@@ -53,5 +55,4 @@ jobs:
           - \`crossover-sources-${CX_VER}.tar.gz\` — the exact CodeWeavers sources it was built from (LGPL-2.1-or-later). Our patches are in \`patches/\` at commit ${SHA}.
           NOTES
 
-          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "$TAG" dist/* --title "Wine ${CX_VER} (${REVISION})" --notes-file notes.md --target "$SHA"
+          gh release create "$TAG" dist/* --title "Wine ${CX_VER} (${REVISION}, build ${BUILD_NUMBER})" --notes-file notes.md --target "$SHA"
