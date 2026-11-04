@@ -1,0 +1,64 @@
+Conversio: Metal performance HUD for D3DMetal and MoltenVK surfaces.
+
+MTL_HUD_ENABLED did not show the HUD for D3DMetal games under Wine, and games
+started by Steam inherit Steam's environment, not the one Conversio chose.
+The Mac driver now reads a MetalHUD option (HKCU\Software\Wine\Mac Driver or
+AppDefaults\<app>.exe\Mac Driver; MTL_HUD_ENABLED=1 as a fallback) and turns the
+HUD on per CAMetalLayer through developerHUDProperties (macOS 13+).
+
+diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
+index ffb7c6a..47c0e9e 100644
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -988,6 +988,9 @@ - (CALayer*) makeBackingLayer
+         layer.magnificationFilter = kCAFilterNearest;
+         layer.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+         layer.contentsScale = retina_on ? 2.0 : 1.0;
++        /* Conversio: Metal HUD per layer, which works even where MTL_HUD_ENABLED doesn't reach Metal. */
++        if (metal_hud_enabled && [layer respondsToSelector:@selector(setDeveloperHUDProperties:)])
++            [layer setValue:@{ @"mode": @"default", @"logging": @"default" } forKey:@"developerHUDProperties"];
+         return layer;
+     }
+ 
+diff --git a/dlls/winemac.drv/macdrv_cocoa.h b/dlls/winemac.drv/macdrv_cocoa.h
+index 477efe9..bf25bed 100644
+--- a/dlls/winemac.drv/macdrv_cocoa.h
++++ b/dlls/winemac.drv/macdrv_cocoa.h
+@@ -146,6 +146,7 @@
+ extern bool retina_enabled;  /* Whether Retina mode is enabled via registry setting. */
+ extern bool retina_on;       /* Whether Retina mode is currently active (enabled and display is in default mode). */
+ extern bool enable_app_nap;
++extern bool metal_hud_enabled;
+ 
+ static inline CGRect cgrect_mac_from_win(CGRect rect)
+ {
+diff --git a/dlls/winemac.drv/macdrv_main.c b/dlls/winemac.drv/macdrv_main.c
+index 56e7a77..b7068c1 100644
+--- a/dlls/winemac.drv/macdrv_main.c
++++ b/dlls/winemac.drv/macdrv_main.c
+@@ -60,6 +60,7 @@ bool use_precise_scrolling = true;
+ int gl_surface_mode = GL_SURFACE_IN_FRONT_OPAQUE;
+ bool retina_enabled = false;
+ bool enable_app_nap = false;
++bool metal_hud_enabled = false;
+ 
+ UINT64 app_icon_callback = 0;
+ UINT64 app_quit_request_callback = 0;
+@@ -389,6 +390,17 @@ static void setup_options(void)
+     if (!get_config_key(hkey, appkey, "EnableAppNap", buffer, sizeof(buffer)))
+         enable_app_nap = IS_OPTION_TRUE(buffer[0]);
+ 
++    /* Conversio: show Apple's Metal performance HUD on Metal surfaces (D3DMetal, MoltenVK).
++       The registry works for programs started by other programs, e.g. games started by Steam,
++       whose environment Conversio doesn't control. MTL_HUD_ENABLED=1 is honoured as well. */
++    if (!get_config_key(hkey, appkey, "MetalHUD", buffer, sizeof(buffer)))
++        metal_hud_enabled = IS_OPTION_TRUE(buffer[0]);
++    else
++    {
++        const char *hud = getenv("MTL_HUD_ENABLED");
++        metal_hud_enabled = hud && hud[0] == '1';
++    }
++
+     /* Don't use appkey.  The DPI and monitor sizes should be consistent for all
+        processes in the prefix. */
+     if (!get_config_key(hkey, NULL, "RetinaMode", buffer, sizeof(buffer)))
