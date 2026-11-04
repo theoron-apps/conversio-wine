@@ -59,7 +59,8 @@ jobs:
       - name: Environment
         run: |
           echo "macOS $(sw_vers -productVersion) $(uname -m), $(sysctl -n hw.ncpu) CPUs"
-          xcodebuild -version | head -1
+          # sed reads everything; head would close the pipe early and crash xcodebuild.
+          xcodebuild -version | sed -n 1p
           df -h "$GITHUB_WORKSPACE" | tail -1
 
       - name: Cache CrossOver sources
