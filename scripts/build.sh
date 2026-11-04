@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+# build.sh — builds CrossOver's open-source Wine for Conversio.
+#
+# The result is an x86_64 Wine (Apple silicon runs it through Rosetta 2) in the new WoW64 mode,
+# so 32- and 64-bit Windows programs both work without any 32-bit macOS libraries. Libraries Wine
+# loads at runtime (FreeType, GnuTLS, SDL2, MoltenVK) are bundled into wine/lib.
+#
+# Usage:
+#   scripts/build.sh deps        install Homebrew build and runtime dependencies
+#   scripts/build.sh fetch       download CrossOver sources, verify the checksum, extract Wine
+#   scripts/build.sh apply       apply patches/*.patch in order
+#   scripts/build.sh configure   configure Wine (x86_64 + i386 through WoW64)
+#   scripts/build.sh build       make
+#   scripts/build.sh install     install into build/stage/wine
+#   scripts/build.sh bundle      copy runtime libraries into wine/lib and sign everything ad hoc
+#   scripts/build.sh test        smoke-test the installed Wine
+#   scripts/build.sh package     pack dist/conversio-wine-<version>-x86_64.tar.xz
+#   scripts/build.sh all         everything above, in order
+#
+# Environment: CX_VER (default 26.3.0), REVISION (default 1), CX_SHA256 (checksum for a version
+# that is not pinned below), BUILD_DIR (default ./build), JOBS (default: all cores).
+#
+# On Apple silicon the script re-runs itself under Rosetta and needs Intel Homebrew in /usr/local.
+
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+CX_VER="${CX_VER:-26.3.0}"
+REVISION="${REVISION:-1}"
+BUILD_DIR="${BUILD_DIR:-$REPO/build}"
+DIST="${DIST:-$REPO/dist}"
+JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
+
+SRC_URL="https://media.codeweavers.com/pub/crossover/source/crossover-sources-${CX_VER}.tar.gz"
+SRC_TGZ="$BUILD_DIR/crossover-sources-${CX_VER}.tar.gz"
+WINE_SRC="$BUILD_DIR/wine-src"
+WINE_BUILD="$BUILD_DIR/wine-build"
+STAGE="$BUILD_DIR/stage"
+WINE_ROOT="$STAGE/wine"
+PACKAGE="conversio-wine-cx${CX_VER}-${REVISION}-x86_64"
+
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
+export HOMEBREW_NO_AUTO_UPDATE=1
+export HOMEBREW_NO_INSTALL_CLEANUP=1
+export HOMEBREW_NO_ENV_HINTS=1
+
+# Wine for macOS is an Intel program: on Apple silicon, build everything under Rosetta.
+if [ "$(uname -m)" = "arm64" ] && [ -z "${CONVERSIO_UNDER_ROSETTA:-}" ]; then
+  if [ ! -x /usr/local/bin/brew ]; then
+    echo "On Apple silicon this build needs Intel Homebrew in /usr/local. Install it with:"
+    echo '  arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+    exit 1
+  fi
+  export CONVERSIO_UNDER_ROSETTA=1
+  exec arch -x86_64 /bin/bash "$0" "$@"
+fi
+
+BREW="${BREW:-}"
+if [ -z "$BREW" ]; then
+  if [ -x /usr/local/bin/brew ]; then BREW=/usr/local/bin/brew; else BREW="$(command -v brew)"; fi
+fi
+BREW_PREFIX="$("$BREW" --prefix)"
+
+BUILD_DEPS="bison flex mingw-w64 pkgconf ccache"
+RUNTIME_DEPS="freetype gnutls sdl2 molten-vk"
+
+log() { printf '\n==> %s\n' "$*"; }
+
+# SHA-256 of CrossOver source tarballs we have built from.
+pinned_sha256() {
+  case "$1" in
+    26.3.0) echo ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872 ;;
+  esac
+}
+
+use_tools() {
+  export PATH="$("$BREW" --prefix bison)/bin:$("$BREW" --prefix flex)/bin:$BREW_PREFIX/bin:$PATH"
+}
+
+cmd_deps() {
+  log "Installing Homebrew dependencies"
+  # shellcheck disable=SC2086
+  "$BREW" install $BUILD_DEPS $RUNTIME_DEPS
+}
+
+cmd_fetch() {
+  log "Fetching CrossOver $CX_VER sources"
+  mkdir -p "$BUILD_DIR"
+  if [ ! -f "$SRC_TGZ" ]; then
+    curl -fL --retry 3 --retry-delay 5 -o "$SRC_TGZ.part" "$SRC_URL"
+    mv "$SRC_TGZ.part" "$SRC_TGZ"
+  fi
+
+  local expected actual
+  expected="${CX_SHA256:-$(pinned_sha256 "$CX_VER")}"
+  actual="$(shasum -a 256 "$SRC_TGZ" | cut -d ' ' -f 1)"
+  if [ -z "$expected" ]; then
+    echo "No checksum is pinned for CrossOver $CX_VER. Its SHA-256 is:"
+    echo "  $actual"
+    echo "Review the source, then add it to pinned_sha256 in scripts/build.sh (or set CX_SHA256)."
+    exit 1
+  fi
+  if [ "$actual" != "$expected" ]; then
+    echo "Checksum mismatch for $SRC_TGZ"
+    echo "  expected $expected"
+    echo "  actual   $actual"
+    exit 1
+  fi
+  echo "Checksum OK"
+
+  rm -rf "$WINE_SRC" "$BUILD_DIR/sources"
+  tar -xzf "$SRC_TGZ" -C "$BUILD_DIR" sources/wine
+  mv "$BUILD_DIR/sources/wine" "$WINE_SRC"
+  rm -rf "$BUILD_DIR/sources"
+  (
+    cd "$WINE_SRC"
+    git init -q
+    git add -A
+    git -c user.name=build -c user.email=build@localhost commit -qm "CrossOver $CX_VER Wine"
+  )
+  echo "Wine source: $(cat "$WINE_SRC/VERSION")"
+}
+
+cmd_apply() {
+  log "Applying patches"
+  shopt -s nullglob
+  local patches=("$REPO"/patches/*.patch)
+  shopt -u nullglob
+  if [ ${#patches[@]} -eq 0 ]; then
+    echo "No patches"
+    return
+  fi
+  local patch
+  for patch in "${patches[@]}"; do
+    echo "applying $(basename "$patch")"
+    (cd "$WINE_SRC" && git apply --whitespace=nowarn "$patch")
+  done
+}
+
+cmd_configure() {
+  log "Configuring Wine (x86_64 + i386 through WoW64)"
+  use_tools
+  rm -rf "$WINE_BUILD"
+  mkdir -p "$WINE_BUILD"
+  cd "$WINE_BUILD"
+
+  # Use MoltenVK directly instead of a Vulkan loader, the way CrossOver does.
+  export ac_cv_lib_soname_vulkan=""
+
+  CC="${CC:-clang}" \
+  CXX="${CXX:-clang++}" \
+  CFLAGS="-O2 -g0 -Wno-deprecated-declarations -Wno-format -Wno-incompatible-function-pointer-types -Wno-int-conversion" \
+  CROSSCFLAGS="-O2 -g0" \
+  CPPFLAGS="-I$BREW_PREFIX/include" \
+  LDFLAGS="-Wl,-headerpad_max_install_names -L$BREW_PREFIX/lib" \
+  "$WINE_SRC/configure" \
+    --prefix=/wine \
+    --enable-archs=i386,x86_64 \
+    --disable-tests \
+    --with-coreaudio \
+    --with-freetype \
+    --with-gnutls \
+    --with-sdl \
+    --with-vulkan \
+    --without-alsa \
+    --without-capi \
+    --without-cups \
+    --without-dbus \
+    --without-gphoto \
+    --without-gstreamer \
+    --without-krb5 \
+    --without-oss \
+    --without-pcap \
+    --without-pulse \
+    --without-sane \
+    --without-udev \
+    --without-usb \
+    --without-v4l2 \
+    --without-x
+
+  log "Runtime libraries Wine will load"
+  grep -E '^#define SONAME_' include/config.h || true
+  local missing=""
+  for name in LIBFREETYPE LIBGNUTLS LIBSDL2 LIBMOLTENVK; do
+    grep -q "#define SONAME_$name " include/config.h || missing="$missing $name"
+  done
+  if [ -n "$missing" ]; then
+    echo "Configure did not find:$missing"
+    exit 1
+  fi
+}
+
+cmd_build() {
+  log "Building Wine with $JOBS jobs"
+  use_tools
+  make -C "$WINE_BUILD" -j"$JOBS"
+}
+
+cmd_install() {
+  log "Installing into $WINE_ROOT"
+  use_tools
+  rm -rf "$STAGE"
+  make -C "$WINE_BUILD" install-lib DESTDIR="$STAGE"
+  [ -x "$WINE_ROOT/bin/wine" ] || { echo "No wine binary in $WINE_ROOT/bin"; exit 1; }
+}
+
+# Copies a Homebrew library and, recursively, the Homebrew libraries it links against into
+# wine/lib, pointing their references at each other with @loader_path.
+bundle_dylib() {
+  local source="$1" name target dependency dependency_name
+  name="$(basename "$source")"
+  target="$WINE_ROOT/lib/$name"
+  [ -f "$target" ] && return 0
+  cp -L "$source" "$target"
+  chmod u+w "$target"
+  install_name_tool -id "@loader_path/$name" "$target"
+  while read -r dependency; do
+    case "$dependency" in
+      "$BREW_PREFIX"/*|/usr/local/*|/opt/homebrew/*)
+        dependency_name="$(basename "$dependency")"
+        bundle_dylib "$dependency"
+        install_name_tool -change "$dependency" "@loader_path/$dependency_name" "$target"
+        ;;
+    esac
+  done < <(otool -L "$target" | tail -n +2 | awk '{print $1}')
+}
+
+cmd_bundle() {
+  log "Bundling runtime libraries"
+  mkdir -p "$WINE_ROOT/lib"
+  local soname
+  for soname in $(grep -E '^#define SONAME_' "$WINE_BUILD/include/config.h" | sed -E 's/.*"(.*)".*/\1/'); do
+    if [ -f "$BREW_PREFIX/lib/$soname" ]; then
+      echo "bundling $soname"
+      bundle_dylib "$BREW_PREFIX/lib/$soname"
+    else
+      echo "from macOS: $soname"
+    fi
+  done
+
+  log "Signing ad hoc"
+  local file
+  while IFS= read -r -d '' file; do
+    if file -b "$file" | grep -q 'Mach-O'; then
+      codesign --force --sign - "$file" 2>/dev/null || echo "could not sign $file"
+    fi
+  done < <(find "$WINE_ROOT" -type f -print0)
+}
+
+cmd_test() {
+  log "Smoke test"
+  # Conversio points dlopen at the bundled libraries the same way.
+  export DYLD_FALLBACK_LIBRARY_PATH="$WINE_ROOT/lib:/usr/lib"
+  "$WINE_ROOT/bin/wine" --version
+  local prefix="$BUILD_DIR/test-prefix"
+  rm -rf "$prefix"
+  # macOS has no `timeout`; perl's alarm does the same.
+  if WINEPREFIX="$prefix" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" \
+     perl -e 'alarm shift; exec @ARGV' 600 "$WINE_ROOT/bin/wine" wineboot --init; then
+    WINEPREFIX="$prefix" "$WINE_ROOT/bin/wineserver" -w || true
+    echo "wineboot OK: $(ls "$prefix/drive_c/windows/system32" | wc -l | tr -d ' ') files in system32"
+    WINEPREFIX="$prefix" WINEDEBUG=-all "$WINE_ROOT/bin/wine" cmd /c ver || true
+  else
+    echo "warning: wineboot did not finish (headless runners may not allow it)"
+  fi
+}
+
+cmd_package() {
+  log "Packaging $PACKAGE"
+  mkdir -p "$DIST"
+  cp "$WINE_SRC/COPYING.LIB" "$WINE_ROOT/COPYING.LIB"
+  cp "$WINE_SRC/LICENSE" "$WINE_ROOT/LICENSE" 2>/dev/null || true
+  {
+    echo "Conversio Wine $CX_VER-$REVISION"
+    echo "Wine: $(cat "$WINE_SRC/VERSION")"
+    echo "Source: $SRC_URL"
+    echo "Source SHA-256: $(shasum -a 256 "$SRC_TGZ" | cut -d ' ' -f 1)"
+    echo "Patches: $(cd "$REPO/patches" 2>/dev/null && ls ./*.patch 2>/dev/null | tr '\n' ' ')"
+    echo "Built: $(date -u +%Y-%m-%dT%H:%M:%SZ) on macOS $(sw_vers -productVersion) $(uname -m)"
+    echo "Builder: https://github.com/theoron-apps/conversio-wine"
+    echo "License: LGPL-2.1-or-later (see COPYING.LIB). Sources are attached to the release."
+  } > "$WINE_ROOT/CONVERSIO-BUILD.txt"
+  tar -C "$STAGE" -cJf "$DIST/$PACKAGE.tar.xz" wine
+  (cd "$DIST" && shasum -a 256 "$PACKAGE.tar.xz" > "$PACKAGE.tar.xz.sha256")
+  ls -lh "$DIST"
+}
+
+case "${1:-all}" in
+  deps|fetch|apply|configure|build|install|bundle|test|package) "cmd_$1" ;;
+  all)
+    cmd_deps; cmd_fetch; cmd_apply; cmd_configure; cmd_build
+    cmd_install; cmd_bundle; cmd_test; cmd_package
+    ;;
+  *)
+    echo "usage: $0 [all|deps|fetch|apply|configure|build|install|bundle|test|package]"
+    exit 1
+    ;;
+esac

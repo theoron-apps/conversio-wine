@@ -1,0 +1,143 @@
+name: Build Wine
+
+on:
+  workflow_dispatch:
+    inputs:
+      cx_version:
+        description: CrossOver source version
+        default: "26.3.0"
+        type: string
+      revision:
+        description: Our build number for this CrossOver version (bump when patches change)
+        default: "1"
+        type: string
+      cx_sha256:
+        description: SHA-256 of the source tarball, only for a version not pinned in scripts/build.sh
+        default: ""
+        type: string
+      publish:
+        description: Publish a GitHub release that Conversio downloads
+        default: false
+        type: boolean
+  push:
+    branches: [main]
+    paths:
+      - "scripts/**"
+      - "patches/**"
+      - ".github/workflows/build.yml"
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    # Explicit bash turns on pipefail, so `cmd | tee log` still fails when cmd fails.
+    shell: bash
+
+jobs:
+  build:
+    name: Wine ${{ inputs.cx_version || '26.3.0' }} (x86_64)
+    # Wine for macOS is an Intel program; an Intel runner gives native x86_64 Homebrew libraries.
+    runs-on: macos-15-intel
+    timeout-minutes: 330
+    env:
+      CX_VER: ${{ inputs.cx_version || '26.3.0' }}
+      REVISION: ${{ inputs.revision || '1' }}
+      CX_SHA256: ${{ inputs.cx_sha256 }}
+      CC: ccache clang
+      CXX: ccache clang++
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 3G
+      CCACHE_COMPRESS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          echo "macOS $(sw_vers -productVersion) $(uname -m), $(sysctl -n hw.ncpu) CPUs"
+          xcodebuild -version | head -1
+          df -h "$GITHUB_WORKSPACE" | tail -1
+
+      - name: Cache CrossOver sources
+        uses: actions/cache@v4
+        with:
+          path: build/crossover-sources-${{ env.CX_VER }}.tar.gz
+          key: crossover-sources-${{ env.CX_VER }}
+
+      - name: Cache compiler results
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ env.CX_VER }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ env.CX_VER }}-
+            ccache-
+
+      - name: Install dependencies
+        run: scripts/build.sh deps
+
+      - name: Fetch sources
+        run: scripts/build.sh fetch
+
+      - name: Apply patches
+        run: scripts/build.sh apply
+
+      - name: Configure
+        run: scripts/build.sh configure 2>&1 | tee build/configure.log
+
+      - name: Build
+        run: scripts/build.sh build > build/make.log 2>&1 || { tail -n 200 build/make.log; exit 1; }
+
+      - name: Install
+        run: scripts/build.sh install
+
+      - name: Bundle libraries
+        run: scripts/build.sh bundle
+
+      - name: Smoke test
+        run: scripts/build.sh test
+
+      - name: Package
+        run: scripts/build.sh package
+
+      - name: Compiler cache stats
+        if: always()
+        run: command -v ccache >/dev/null && ccache -s || true
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: conversio-wine-cx${{ env.CX_VER }}-${{ env.REVISION }}
+          path: dist/
+          retention-days: 14
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-cx${{ env.CX_VER }}-${{ env.REVISION }}
+          path: |
+            build/configure.log
+            build/make.log
+            build/wine-build/config.log
+          if-no-files-found: ignore
+
+      - name: Publish release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="cx${CX_VER}-${REVISION}"
+          cp "build/crossover-sources-${CX_VER}.tar.gz" dist/
+          cat > notes.md <<EOF
+          Wine from CrossOver ${CX_VER} sources, build ${REVISION}, for Conversio.
+
+          - \`conversio-wine-cx${CX_VER}-${REVISION}-x86_64.tar.xz\` — the Wine that Conversio downloads (x86_64, runs on Apple silicon through Rosetta 2).
+          - \`crossover-sources-${CX_VER}.tar.gz\` — the exact CodeWeavers sources it was built from (LGPL-2.1-or-later). Our patches are in \`patches/\` at commit ${GITHUB_SHA}.
+          EOF
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" dist/* --title "Wine ${CX_VER} (${REVISION})" --notes-file notes.md --target "$GITHUB_SHA"
