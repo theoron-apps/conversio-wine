@@ -63,7 +63,7 @@ fi
 BREW_PREFIX="$("$BREW" --prefix)"
 
 BUILD_DEPS="bison flex mingw-w64 pkgconf ccache"
-RUNTIME_DEPS="freetype gnutls sdl2 molten-vk"
+RUNTIME_DEPS="freetype gnutls sdl2 sdl3 molten-vk"
 
 log() { printf '\n==> %s\n' "$*"; }
 
@@ -270,6 +270,16 @@ cmd_bundle() {
     fi
   done
 
+  # Homebrew's SDL2 is sdl2-compat: it loads SDL3 at runtime and, if SDL3 is missing, shows an
+  # error dialog from a background thread, which crashes Wine's controller service.
+  if [ -f "$WINE_ROOT/lib/libSDL2-2.0.0.dylib" ]; then
+    local sdl3
+    sdl3="$(ls "$BREW_PREFIX"/lib/libSDL3.0.dylib "$BREW_PREFIX"/lib/libSDL3.*.dylib 2>/dev/null | head -n 1)"
+    [ -n "$sdl3" ] || { echo "SDL2 needs SDL3, but no libSDL3 in $BREW_PREFIX/lib"; exit 1; }
+    echo "bundling $(basename "$sdl3") for SDL2"
+    bundle_dylib "$sdl3"
+  fi
+
   log "Signing ad hoc"
   local file
   while IFS= read -r -d '' file; do
@@ -303,6 +313,11 @@ cmd_test() {
     grep -a "conversio-ok" "$trace" || true
   else
     echo "warning: wine cmd did not finish"
+  fi
+  if grep -a -q -E "NSInternalInconsistencyException|Terminating app" "$trace"; then
+    echo "error: a native library crashed while Wine was starting:"
+    grep -a -B2 -A12 "Terminating app" "$trace" | head -n 40
+    exit 1
   fi
   echo "--- loaded and failed DLLs (first 60 lines) ---"
   grep -a -E "Loaded|err:|Failed|not found|c0000135" "$trace" | head -n 60 || true
