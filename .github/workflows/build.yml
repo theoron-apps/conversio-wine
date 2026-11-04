@@ -46,7 +46,7 @@ jobs:
     timeout-minutes: 330
     env:
       CX_VER: ${{ inputs.cx_version || '26.3.0' }}
-      REVISION: ${{ inputs.revision || '1' }}
+      REVISION: ${{ inputs.revision || '2' }}
       CX_SHA256: ${{ inputs.cx_sha256 }}
       CC: ccache clang
       CXX: ccache clang++
