@@ -12,6 +12,7 @@ Each build is made from the open-source Wine that CodeWeavers publishes with eve
 | Architecture | x86_64; Apple silicon runs it through Rosetta 2 |
 | 32-bit programs | Through WoW64, so installers and launchers work without 32-bit macOS libraries |
 | Bundled libraries | FreeType (fonts), GnuTLS (HTTPS), SDL2 (game controllers), MoltenVK (Vulkan → Metal) |
+| Add-ons | Wine Mono (.NET) and Wine Gecko (HTML engine) in the versions this Wine expects, so Wine never asks to download them |
 | Not included | Apple's D3DMetal: Apple doesn't allow redistributing it. Conversio imports it from the free Game Porting Toolkit on your Mac |
 
 ## Building

@@ -12,6 +12,7 @@
 #   scripts/build.sh configure   configure Wine (x86_64 + i386 through WoW64)
 #   scripts/build.sh build       make
 #   scripts/build.sh install     install into build/stage/wine
+#   scripts/build.sh addons      add Wine Mono (.NET) and Wine Gecko (HTML) to share/wine
 #   scripts/build.sh bundle      copy runtime libraries into wine/lib and sign everything ad hoc
 #   scripts/build.sh test        smoke-test the installed Wine
 #   scripts/build.sh package     pack dist/conversio-wine-<version>-x86_64.tar.xz
@@ -210,6 +211,31 @@ cmd_install() {
   [ -x "$WINE_ROOT/bin/wine" ] || { echo "No wine binary in $WINE_ROOT/bin"; exit 1; }
 }
 
+# Wine Mono (.NET) and Wine Gecko (the HTML engine) in the exact versions this Wine asks for,
+# so Wine finds them in share/wine instead of asking people to download them.
+cmd_addons() {
+  log "Adding Wine Mono and Wine Gecko"
+  local addons="$WINE_SRC/dlls/appwiz.cpl/addons.c" mono gecko
+  mono="$(sed -n 's/^#define MONO_VERSION "\(.*\)"/\1/p' "$addons")"
+  gecko="$(sed -n 's/^#define GECKO_VERSION "\(.*\)"/\1/p' "$addons")"
+  [ -n "$mono" ] && [ -n "$gecko" ] || { echo "Could not read add-on versions from $addons"; exit 1; }
+  echo "Wine Mono $mono, Wine Gecko $gecko"
+
+  local cache="$BUILD_DIR/addons"
+  mkdir -p "$cache" "$WINE_ROOT/share/wine/mono" "$WINE_ROOT/share/wine/gecko"
+  fetch_addon "https://dl.winehq.org/wine/wine-mono/$mono/wine-mono-$mono-x86.msi" "$cache" "$WINE_ROOT/share/wine/mono"
+  fetch_addon "https://dl.winehq.org/wine/wine-gecko/$gecko/wine-gecko-$gecko-x86.msi" "$cache" "$WINE_ROOT/share/wine/gecko"
+  fetch_addon "https://dl.winehq.org/wine/wine-gecko/$gecko/wine-gecko-$gecko-x86_64.msi" "$cache" "$WINE_ROOT/share/wine/gecko"
+}
+
+fetch_addon() { # url cache-dir target-dir
+  local name
+  name="$(basename "$1")"
+  [ -f "$2/$name" ] || curl -fL --retry 3 --retry-delay 5 -o "$2/$name" "$1"
+  cp "$2/$name" "$3/$name"
+  echo "added $name"
+}
+
 # Copies a Homebrew library and, recursively, the Homebrew libraries it links against into
 # wine/lib, pointing their references at each other with @loader_path.
 bundle_dylib() {
@@ -271,7 +297,7 @@ cmd_test() {
   local prefix="$BUILD_DIR/test-prefix" trace="$BUILD_DIR/smoke-test.log"
   rm -rf "$prefix"
   # macOS has no `timeout`; perl's alarm does the same. The trace shows which DLL fails to load.
-  if WINEPREFIX="$prefix" WINEDEBUG="err+all,+loaddll" WINEDLLOVERRIDES="mscoree,mshtml=" \
+  if WINEPREFIX="$prefix" WINEDEBUG="err+all,+loaddll" \
      perl -e 'alarm shift; exec @ARGV' 300 "$WINE_ROOT/bin/wine" cmd /c echo conversio-ok > "$trace" 2>&1; then
     echo "Windows command line works:"
     grep -a "conversio-ok" "$trace" || true
@@ -304,10 +330,10 @@ cmd_package() {
 }
 
 case "${1:-all}" in
-  deps|fetch|apply|configure|build|install|bundle|test|package) "cmd_$1" ;;
+  deps|fetch|apply|configure|build|install|addons|bundle|test|package) "cmd_$1" ;;
   all)
     cmd_deps; cmd_fetch; cmd_apply; cmd_configure; cmd_build
-    cmd_install; cmd_bundle; cmd_test; cmd_package
+    cmd_install; cmd_addons; cmd_bundle; cmd_test; cmd_package
     ;;
   *)
     echo "usage: $0 [all|deps|fetch|apply|configure|build|install|bundle|test|package]"

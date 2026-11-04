@@ -69,6 +69,12 @@ jobs:
           path: build/crossover-sources-${{ env.CX_VER }}.tar.gz
           key: crossover-sources-${{ env.CX_VER }}
 
+      - name: Cache Wine Mono and Gecko
+        uses: actions/cache@v4
+        with:
+          path: build/addons
+          key: wine-addons-${{ env.CX_VER }}
+
       - name: Cache compiler results
         uses: actions/cache@v4
         with:
@@ -95,6 +101,9 @@ jobs:
 
       - name: Install
         run: scripts/build.sh install
+
+      - name: Add Wine Mono and Gecko
+        run: scripts/build.sh addons
 
       - name: Bundle libraries
         run: scripts/build.sh bundle
