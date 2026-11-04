@@ -55,9 +55,11 @@ jobs:
           - \`crossover-sources-${CX_VER}.tar.gz\` — the exact CodeWeavers sources it was built from (LGPL-2.1-or-later). Our patches are in \`patches/\` at commit ${SHA}.
           NOTES
 
+          # The tag goes on the current main: tagging the older build commit needs the
+          # "workflows" permission, which GITHUB_TOKEN never has. The build commit is in the notes.
           # Create the release step by step so a refusal shows GitHub's full answer.
           if ! gh api -i -X POST "repos/${GITHUB_REPOSITORY}/releases" \
-               -f tag_name="$TAG" -f target_commitish="$SHA" \
+               -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" \
                -f name="Wine ${CX_VER} (${REVISION}, build ${BUILD_NUMBER})" \
                -f body="$(cat notes.md)" -F draft=true > response.txt 2>&1; then
             echo "GitHub refused to create the release:"
