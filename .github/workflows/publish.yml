@@ -55,4 +55,16 @@ jobs:
           - \`crossover-sources-${CX_VER}.tar.gz\` — the exact CodeWeavers sources it was built from (LGPL-2.1-or-later). Our patches are in \`patches/\` at commit ${SHA}.
           NOTES
 
-          gh release create "$TAG" dist/* --title "Wine ${CX_VER} (${REVISION}, build ${BUILD_NUMBER})" --notes-file notes.md --target "$SHA"
+          # Create the release step by step so a refusal shows GitHub's full answer.
+          if ! gh api -i -X POST "repos/${GITHUB_REPOSITORY}/releases" \
+               -f tag_name="$TAG" -f target_commitish="$SHA" \
+               -f name="Wine ${CX_VER} (${REVISION}, build ${BUILD_NUMBER})" \
+               -f body="$(cat notes.md)" -F draft=true > response.txt 2>&1; then
+            echo "GitHub refused to create the release:"
+            cat response.txt
+            echo "--- repository rulesets ---"
+            gh api "repos/${GITHUB_REPOSITORY}/rulesets" 2>&1 || true
+            exit 1
+          fi
+          gh release upload "$TAG" dist/*
+          gh release edit "$TAG" --draft=false --latest
