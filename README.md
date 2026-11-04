@@ -43,3 +43,9 @@ The result is `dist/conversio-wine-cx<version>-<build>-x86_64.tar.xz`.
 Wine is licensed under the [LGPL-2.1-or-later](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html). Every release carries the exact CodeWeavers source tarball it was built from, and our changes are the patches in this repository. The scripts in this repository are MIT licensed.
 
 CrossOver is a trademark of CodeWeavers. This project is not affiliated with CodeWeavers, Apple or Valve.
+
+## Tools
+
+[`tools/`](tools) holds small Windows programs that Conversio puts into bottles. They are built by the **Build tools** workflow and published as `tools-N` releases.
+
+- **steamwebhelper wrapper** — Steam's interface is Chromium, and under Wine on Apple silicon its GPU and network processes crash it or paint it black. The wrapper starts Valve's `steamwebhelper` with `--disable-gpu --single-process`. The fix was worked out by [notpop/steam-on-m1-wine](https://github.com/notpop/steam-on-m1-wine) and [ByMedion/macos-wine-steam](https://github.com/ByMedion/macos-wine-steam).

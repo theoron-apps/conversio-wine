@@ -1,0 +1,45 @@
+name: Build tools
+
+# Small Windows helpers Conversio puts into bottles, published as a "tools-N" release.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tools/**"
+      - ".github/workflows/tools.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  tools:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW-w64
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-mingw-w64-x86-64
+
+      - name: Build steamwebhelper wrapper
+        run: make -C tools/steamwebhelper CC=x86_64-w64-mingw32-gcc
+
+      - name: Publish
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp tools/steamwebhelper/steamwebhelper-wrapper.exe dist/
+          (cd dist && sha256sum steamwebhelper-wrapper.exe > steamwebhelper-wrapper.exe.sha256)
+          TAG="tools-${GITHUB_RUN_NUMBER}"
+          cat > notes.md <<NOTES
+          Windows helpers for Conversio, built from \`tools/\` at ${GITHUB_SHA}.
+
+          - \`steamwebhelper-wrapper.exe\` starts Steam's browser with \`--disable-gpu --single-process\`, so the Steam window works under Wine on Apple silicon.
+          NOTES
+          gh release create "$TAG" dist/* --title "Tools ${GITHUB_RUN_NUMBER}" --notes-file notes.md --target "$GITHUB_SHA" --latest=false
