@@ -101,6 +101,14 @@ jobs:
       - name: Smoke test
         run: scripts/build.sh test
 
+      - name: Upload smoke test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-cx${{ env.CX_VER }}-${{ env.REVISION }}
+          path: build/smoke-test.log
+          if-no-files-found: ignore
+
       - name: Package
         run: scripts/build.sh package
 
@@ -124,6 +132,7 @@ jobs:
             build/configure.log
             build/make.log
             build/wine-build/config.log
+            build/smoke-test.log
           if-no-files-found: ignore
 
       - name: Publish release

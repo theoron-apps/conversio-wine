@@ -147,6 +147,12 @@ cmd_configure() {
   # Use MoltenVK directly instead of a Vulkan loader, the way CrossOver does.
   export ac_cv_lib_soname_vulkan=""
 
+  # Cache the Windows (PE) half of the build too; it's about half of all compiling.
+  if command -v ccache >/dev/null 2>&1; then
+    export x86_64_CC="ccache x86_64-w64-mingw32-gcc"
+    export i386_CC="ccache i686-w64-mingw32-gcc"
+  fi
+
   CC="${CC:-clang}" \
   CXX="${CXX:-clang++}" \
   CFLAGS="-O2 -g0 -Wno-deprecated-declarations -Wno-format -Wno-incompatible-function-pointer-types -Wno-int-conversion" \
@@ -252,17 +258,29 @@ cmd_test() {
   # Conversio points dlopen at the bundled libraries the same way.
   export DYLD_FALLBACK_LIBRARY_PATH="$WINE_ROOT/lib:/usr/lib"
   "$WINE_ROOT/bin/wine" --version
-  local prefix="$BUILD_DIR/test-prefix"
+
+  local dir
+  for dir in x86_64-windows i386-windows x86_64-unix; do
+    echo "lib/wine/$dir: $(ls "$WINE_ROOT/lib/wine/$dir" 2>/dev/null | wc -l | tr -d ' ') files"
+  done
+  for dir in x86_64-windows i386-windows; do
+    ls -la "$WINE_ROOT/lib/wine/$dir/kernel32.dll" "$WINE_ROOT/lib/wine/$dir/ntdll.dll" 2>&1 || true
+  done
+  du -sh "$WINE_ROOT" "$WINE_ROOT"/lib/wine/* 2>/dev/null || true
+
+  local prefix="$BUILD_DIR/test-prefix" trace="$BUILD_DIR/smoke-test.log"
   rm -rf "$prefix"
-  # macOS has no `timeout`; perl's alarm does the same.
-  if WINEPREFIX="$prefix" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" \
-     perl -e 'alarm shift; exec @ARGV' 600 "$WINE_ROOT/bin/wine" wineboot --init; then
-    WINEPREFIX="$prefix" "$WINE_ROOT/bin/wineserver" -w || true
-    echo "wineboot OK: $(ls "$prefix/drive_c/windows/system32" | wc -l | tr -d ' ') files in system32"
-    WINEPREFIX="$prefix" WINEDEBUG=-all "$WINE_ROOT/bin/wine" cmd /c ver || true
+  # macOS has no `timeout`; perl's alarm does the same. The trace shows which DLL fails to load.
+  if WINEPREFIX="$prefix" WINEDEBUG="err+all,+loaddll" WINEDLLOVERRIDES="mscoree,mshtml=" \
+     perl -e 'alarm shift; exec @ARGV' 300 "$WINE_ROOT/bin/wine" cmd /c echo conversio-ok > "$trace" 2>&1; then
+    echo "Windows command line works:"
+    grep -a "conversio-ok" "$trace" || true
   else
-    echo "warning: wineboot did not finish (headless runners may not allow it)"
+    echo "warning: wine cmd did not finish"
   fi
+  echo "--- loaded and failed DLLs (first 60 lines) ---"
+  grep -a -E "Loaded|err:|Failed|not found|c0000135" "$trace" | head -n 60 || true
+  WINEPREFIX="$prefix" "$WINE_ROOT/bin/wineserver" -k 2>/dev/null || true
 }
 
 cmd_package() {
@@ -280,7 +298,7 @@ cmd_package() {
     echo "Builder: https://github.com/theoron-apps/conversio-wine"
     echo "License: LGPL-2.1-or-later (see COPYING.LIB). Sources are attached to the release."
   } > "$WINE_ROOT/CONVERSIO-BUILD.txt"
-  tar -C "$STAGE" -cJf "$DIST/$PACKAGE.tar.xz" wine
+  XZ_OPT="-T0 -6" tar -C "$STAGE" -cJf "$DIST/$PACKAGE.tar.xz" wine
   (cd "$DIST" && shasum -a 256 "$PACKAGE.tar.xz" > "$PACKAGE.tar.xz.sha256")
   ls -lh "$DIST"
 }
