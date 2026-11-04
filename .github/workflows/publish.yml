@@ -1,0 +1,57 @@
+name: Publish Wine
+
+# Publishes the Wine from a finished "Build Wine" run as a release, without building it again.
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: ID of a successful "Build Wine" run
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the build
+        run: gh run download "${{ inputs.run_id }}" --dir artifact --pattern "conversio-wine-*"
+
+      - name: Publish release
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find artifact -name "conversio-wine-*" -type f -exec mv {} dist/ \;
+          FILE=$(ls dist/conversio-wine-*.tar.xz | head -n 1)
+          NAME=$(basename "$FILE" .tar.xz)          # conversio-wine-cx26.3.0-1-x86_64
+          VERSION=${NAME#conversio-wine-cx}
+          VERSION=${VERSION%-x86_64}                # 26.3.0-1
+          CX_VER=${VERSION%-*}
+          REVISION=${VERSION##*-}
+          TAG="cx${VERSION}"
+          SHA=$(gh run view "${{ inputs.run_id }}" --json headSha -q .headSha)
+
+          # LGPL: ship the exact sources next to the build.
+          curl -fL --retry 3 -o "dist/crossover-sources-${CX_VER}.tar.gz" \
+            "https://media.codeweavers.com/pub/crossover/source/crossover-sources-${CX_VER}.tar.gz"
+
+          cat > notes.md <<NOTES
+          Wine from CrossOver ${CX_VER} sources, build ${REVISION}, for Conversio.
+
+          - \`${NAME}.tar.xz\` — the Wine that Conversio downloads (x86_64, runs on Apple silicon through Rosetta 2).
+          - \`crossover-sources-${CX_VER}.tar.gz\` — the exact CodeWeavers sources it was built from (LGPL-2.1-or-later). Our patches are in \`patches/\` at commit ${SHA}.
+          NOTES
+
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" dist/* --title "Wine ${CX_VER} (${REVISION})" --notes-file notes.md --target "$SHA"
