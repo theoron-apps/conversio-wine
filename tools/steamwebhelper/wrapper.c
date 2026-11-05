@@ -1,24 +1,37 @@
 /*
- * steamwebhelper wrapper for Conversio — MIT License, (c) 2026 Theoron.
+ * CEF helper wrapper for Conversio — MIT License, (c) 2026 Theoron.
  *
- * Steam's interface is Chromium (CEF). Under Wine on Apple silicon its GPU process fails
- * (ANGLE can't get the D3D11/GLES it wants) and the UI crashes or paints black, and its
- * separate network process trips over Wine's TLS. Steam's own -cef-* switches don't reach
- * steamwebhelper.exe, so this tiny program takes its place:
+ * Steam's interface and Rockstar's Social Club are Chromium (CEF). Under Wine on Apple silicon
+ * their GPU process fails or paints into a window that belongs to another process, which winemac
+ * can't show: the window stays black, white or crashes. Neither app lets us pass Chromium switches
+ * to its helper, so this tiny program takes the helper's place:
  *
- *   steamwebhelper.exe       this wrapper
- *   steamwebhelper_real.exe  Valve's binary, started with --disable-gpu --single-process
+ *   <name>.exe        this wrapper (steamwebhelper.exe, SocialClubHelper.exe, ...)
+ *   <name>_real.exe   the vendor's binary, started with the switches below plus the original ones
  *
- * Conversio puts the wrapper in place before every Steam launch and starts Steam with
- * -noverifyfiles, so Steam's file check doesn't swap Valve's binary back.
- * The approach was worked out by notpop/steam-on-m1-wine and ByMedion/macos-wine-steam.
+ * The wrapper picks the switches by its own file name, so one binary serves every helper.
+ * Conversio puts it in place before every launch (Steam with -noverifyfiles, so Steam's file
+ * check doesn't swap Valve's binary back). The Steam approach was worked out by
+ * notpop/steam-on-m1-wine and ByMedion/macos-wine-steam.
  */
 #include <windows.h>
 #include <stdlib.h>
 #include <wchar.h>
 
-#define EXTRA_FLAGS L"--disable-gpu --single-process"
-#define REAL_NAME   L"steamwebhelper_real.exe"
+struct helper {
+    const wchar_t *name;   /* file name without .exe, compared case-insensitively */
+    const wchar_t *flags;
+};
+
+static const struct helper helpers[] = {
+    /* Steam: everything in one process; the separate network process trips over Wine's TLS. */
+    { L"steamwebhelper", L"--disable-gpu --single-process" },
+    /* Social Club needs its renderer as a separate process (its IPC checks the remote process),
+     * so only the GPU work moves into the browser process and onto the CPU. */
+    { L"SocialClubHelper", L"--in-process-gpu --disable-gpu --disable-gpu-compositing --disable-software-rasterizer" },
+};
+
+static const wchar_t *default_flags = L"--disable-gpu --disable-gpu-compositing";
 
 /* The command line without our own program name. */
 static const wchar_t *arguments(void)
@@ -36,26 +49,36 @@ static const wchar_t *arguments(void)
 
 int wmain(void)
 {
-    wchar_t real[MAX_PATH];
+    wchar_t real[MAX_PATH + 16];
+    wchar_t base[MAX_PATH];
     DWORD length = GetModuleFileNameW(NULL, real, MAX_PATH);
-    wchar_t *slash;
-    const wchar_t *args;
+    wchar_t *slash, *dot;
+    const wchar_t *args, *flags = default_flags;
     wchar_t *command;
-    size_t size;
+    size_t size, i;
     STARTUPINFOW startup;
     PROCESS_INFORMATION process;
     DWORD code = 1;
 
     if (length == 0 || length >= MAX_PATH) return 1;
     slash = wcsrchr(real, L'\\');
-    if (!slash || (size_t)(slash - real) + 1 + wcslen(REAL_NAME) >= MAX_PATH) return 1;
-    wcscpy(slash + 1, REAL_NAME);
+    if (!slash) return 1;
+    wcsncpy(base, slash + 1, MAX_PATH - 1);
+    base[MAX_PATH - 1] = 0;
+    dot = wcsrchr(base, L'.');
+    if (dot) *dot = 0;
+    for (i = 0; i < sizeof(helpers) / sizeof(helpers[0]); i++) {
+        if (!_wcsicmp(base, helpers[i].name)) flags = helpers[i].flags;
+    }
+    /* <dir>\<base>_real.exe */
+    if ((size_t)(slash - real) + 1 + wcslen(base) + wcslen(L"_real.exe") >= MAX_PATH) return 1;
+    _snwprintf(slash + 1, MAX_PATH, L"%ls_real.exe", base);
 
     args = arguments();
-    size = wcslen(real) + wcslen(EXTRA_FLAGS) + wcslen(args) + 8;
+    size = wcslen(real) + wcslen(flags) + wcslen(args) + 8;
     command = (wchar_t *)calloc(size, sizeof(wchar_t));
     if (!command) return 1;
-    _snwprintf(command, size, L"\"%ls\" %ls %ls", real, EXTRA_FLAGS, args);
+    _snwprintf(command, size, L"\"%ls\" %ls %ls", real, flags, args);
 
     ZeroMemory(&startup, sizeof(startup));
     startup.cb = sizeof(startup);
