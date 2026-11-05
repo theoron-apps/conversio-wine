@@ -1,0 +1,113 @@
+Conversio: games see SDR screens unless HDR is turned on.
+
+On XDR displays D3DMetal reports HDR to DXGI (it reads NSScreen's extended dynamic range
+values), and games such as Euro Truck Simulator 2 pick an HDR10 (BT.2100 PQ) swap chain
+and stay black. Windows keeps HDR off until the user enables it, so the Mac driver now
+makes every screen look SDR to the process: NSScreen's EDR maxima read as 1.0. Wine's own
+monitor info (hdr_enabled, DISPLAYCONFIG advanced color) follows. "EnableHDR"="y" in the
+Mac Driver key (or AppDefaults\<app>.exe\Mac Driver) keeps the real values.
+
+diff --git a/dlls/winemac.drv/cocoa_display.m b/dlls/winemac.drv/cocoa_display.m
+index a96c27f..6f845c5 100644
+--- a/dlls/winemac.drv/cocoa_display.m
++++ b/dlls/winemac.drv/cocoa_display.m
+@@ -26,6 +26,7 @@
+ #import <Metal/Metal.h>
+ #endif
+ #include <dlfcn.h>
++#import <objc/runtime.h>
+ #include "macdrv_cocoa.h"
+ 
+ #pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
+@@ -1040,6 +1041,40 @@ int macdrv_get_monitors(CGDirectDisplayID adapter_id, struct macdrv_monitor** ne
+  *
+  * Frees an monitor list allocated from macdrv_get_monitors()
+  */
++/***********************************************************************
++ *              macdrv_hide_hdr
++ *
++ * Conversio: make every screen look SDR to this process.
++ *
++ * D3DMetal reports HDR to DXGI from NSScreen's extended dynamic range values, and games such
++ * as Euro Truck Simulator 2 then pick an HDR10 (BT.2100 PQ) swap chain on XDR displays and
++ * show a black screen. Windows keeps HDR off unless the user turns it on, so do the same:
++ * the EDR maxima read as 1.0 (no headroom). This covers the monitor info Wine itself
++ * reports too (hdr_enabled in macdrv_get_monitors, DISPLAYCONFIG advanced color).
++ */
++static CGFloat sdr_edr_component_value(id self, SEL _cmd)
++{
++    return 1.0;
++}
++
++void macdrv_hide_hdr(void)
++{
++    static const char * const selectors[] = {
++        "maximumPotentialExtendedDynamicRangeColorComponentValue",
++        "maximumExtendedDynamicRangeColorComponentValue",
++        "maximumReferenceExtendedDynamicRangeColorComponentValue",
++    };
++    Class cls = objc_getClass("NSScreen");
++    unsigned int i;
++
++    for (i = 0; cls && i < sizeof(selectors) / sizeof(selectors[0]); i++)
++    {
++        Method method = class_getInstanceMethod(cls, sel_registerName(selectors[i]));
++        if (method)
++            method_setImplementation(method, (IMP)sdr_edr_component_value);
++    }
++}
++
+ void macdrv_free_monitors(struct macdrv_monitor* monitors, int monitor_count)
+ {
+     while (monitor_count--)
+diff --git a/dlls/winemac.drv/macdrv_cocoa.h b/dlls/winemac.drv/macdrv_cocoa.h
+index a9908ec..f2284ca 100644
+--- a/dlls/winemac.drv/macdrv_cocoa.h
++++ b/dlls/winemac.drv/macdrv_cocoa.h
+@@ -148,6 +148,7 @@
+ extern bool enable_app_nap;
+ extern bool metal_hud_enabled;
+ extern bool fullscreen_above_overlays;
++extern bool enable_hdr;
+ 
+ static inline CGRect cgrect_mac_from_win(CGRect rect)
+ {
+@@ -288,6 +289,7 @@ static inline CGPoint cgpoint_win_from_mac(CGPoint point)
+ extern void macdrv_free_adapters(struct macdrv_adapter* adapters);
+ extern int macdrv_get_monitors(CGDirectDisplayID adapter_id, struct macdrv_monitor** monitors, int* count);
+ extern void macdrv_free_monitors(struct macdrv_monitor* monitors, int monitor_count);
++extern void macdrv_hide_hdr(void);
+ 
+ 
+ /* event */
+diff --git a/dlls/winemac.drv/macdrv_main.c b/dlls/winemac.drv/macdrv_main.c
+index 9c96c14..e37e02d 100644
+--- a/dlls/winemac.drv/macdrv_main.c
++++ b/dlls/winemac.drv/macdrv_main.c
+@@ -62,6 +62,7 @@ bool retina_enabled = false;
+ bool enable_app_nap = false;
+ bool metal_hud_enabled = false;
+ bool fullscreen_above_overlays = true;
++bool enable_hdr = false;
+ 
+ UINT64 app_icon_callback = 0;
+ UINT64 app_quit_request_callback = 0;
+@@ -407,6 +408,10 @@ static void setup_options(void)
+     if (!get_config_key(hkey, appkey, "FullscreenAboveOverlays", buffer, sizeof(buffer)))
+         fullscreen_above_overlays = IS_OPTION_TRUE(buffer[0]);
+ 
++    /* Conversio: games see SDR screens unless HDR is turned on, like on Windows. */
++    if (!get_config_key(hkey, appkey, "EnableHDR", buffer, sizeof(buffer)))
++        enable_hdr = IS_OPTION_TRUE(buffer[0]);
++
+     /* Don't use appkey.  The DPI and monitor sizes should be consistent for all
+        processes in the prefix. */
+     if (!get_config_key(hkey, NULL, "RetinaMode", buffer, sizeof(buffer)))
+@@ -476,6 +481,7 @@ static NTSTATUS macdrv_init(void *arg)
+ 
+     init_win_context();
+     setup_options();
++    if (!enable_hdr) macdrv_hide_hdr();
+     load_strings(params->strings);
+ 
+     macdrv_err_on = ERR_ON(macdrv);

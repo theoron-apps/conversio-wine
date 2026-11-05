@@ -1,0 +1,67 @@
+Conversio: fullscreen games above status-level overlays, for direct presentation.
+
+The Metal HUD showed "Composited" for fullscreen games: WindowServer copied every frame
+through its compositor instead of handing the game's CAMetalLayer to the display. A
+fullscreen Wine window sat at NSStatusWindowLevel + 1, the level many overlay apps use
+(notch apps, for example), so such a window could end up above the game. Any window over
+the layer, even a mostly transparent one, forces composition. Fullscreen windows of the
+active app now go to NSPopUpMenuWindowLevel + 1, which is still below the Command-Tab
+switcher and system alerts. "FullscreenAboveOverlays"="n" in the Mac Driver key restores
+the old level.
+
+diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
+index 47c0e9e..6b5ac89 100644
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -1265,7 +1265,14 @@ - (NSInteger) minimumLevelForActive:(BOOL)active
+                 if (captured)
+                     level = CGShieldingWindowLevel() + 1; /* Need +1 or we don't get mouse moves */
+                 else
+-                    level = NSStatusWindowLevel + 1;
++                {
++                    /* Conversio: above overlays that sit at the status bar level, e.g. notch
++                       apps at NSStatusWindowLevel + 1. A window over the game, even a mostly
++                       transparent one, makes WindowServer composite every frame instead of
++                       presenting the Metal layer directly to the display (lag, lower FPS).
++                       Still below the Command-Tab switcher and system alerts. */
++                    level = fullscreen_above_overlays ? NSPopUpMenuWindowLevel + 1 : NSStatusWindowLevel + 1;
++                }
+ 
+                 if (self.floating)
+                     level++;
+diff --git a/dlls/winemac.drv/macdrv_cocoa.h b/dlls/winemac.drv/macdrv_cocoa.h
+index bf25bed..a9908ec 100644
+--- a/dlls/winemac.drv/macdrv_cocoa.h
++++ b/dlls/winemac.drv/macdrv_cocoa.h
+@@ -147,6 +147,7 @@
+ extern bool retina_on;       /* Whether Retina mode is currently active (enabled and display is in default mode). */
+ extern bool enable_app_nap;
+ extern bool metal_hud_enabled;
++extern bool fullscreen_above_overlays;
+ 
+ static inline CGRect cgrect_mac_from_win(CGRect rect)
+ {
+diff --git a/dlls/winemac.drv/macdrv_main.c b/dlls/winemac.drv/macdrv_main.c
+index b7068c1..9c96c14 100644
+--- a/dlls/winemac.drv/macdrv_main.c
++++ b/dlls/winemac.drv/macdrv_main.c
+@@ -61,6 +61,7 @@ int gl_surface_mode = GL_SURFACE_IN_FRONT_OPAQUE;
+ bool retina_enabled = false;
+ bool enable_app_nap = false;
+ bool metal_hud_enabled = false;
++bool fullscreen_above_overlays = true;
+ 
+ UINT64 app_icon_callback = 0;
+ UINT64 app_quit_request_callback = 0;
+@@ -401,6 +402,11 @@ static void setup_options(void)
+         metal_hud_enabled = hud && hud[0] == '1';
+     }
+ 
++    /* Conversio: raise fullscreen windows above status-level overlays so the game's Metal layer
++       can go to the display directly ("Direct" in the Metal HUD) instead of being composited. */
++    if (!get_config_key(hkey, appkey, "FullscreenAboveOverlays", buffer, sizeof(buffer)))
++        fullscreen_above_overlays = IS_OPTION_TRUE(buffer[0]);
++
+     /* Don't use appkey.  The DPI and monitor sizes should be consistent for all
+        processes in the prefix. */
+     if (!get_config_key(hkey, NULL, "RetinaMode", buffer, sizeof(buffer)))
