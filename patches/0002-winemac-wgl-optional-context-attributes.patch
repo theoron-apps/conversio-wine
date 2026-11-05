@@ -1,0 +1,29 @@
+Conversio: accept optional WGL context attributes the Mac driver rejected.
+
+Wine advertises WGL_ARB_create_context_no_error, but winemac.drv refused
+WGL_CONTEXT_OPENGL_NO_ERROR_ARB (and the release-behavior and reset-strategy
+hints) as unknown attributes with ERROR_INVALID_PARAMETER, so games that pass
+them could not create an OpenGL context (Euro Truck Simulator 2 with -rdevice gl:
+"wglCreateContextAttribs: FAIL (0x57)"). They are hints with no macOS
+equivalent and are now ignored.
+
+diff --git a/dlls/winemac.drv/opengl.c b/dlls/winemac.drv/opengl.c
+index 8c7b3fe..e58d7be 100644
+--- a/dlls/winemac.drv/opengl.c
++++ b/dlls/winemac.drv/opengl.c
+@@ -2152,6 +2152,15 @@ static BOOL macdrv_context_create(int format, void *shared, const int *attrib_li
+                 profile = value;
+                 break;
+ 
++            /* Conversio: optional hints that macOS OpenGL has no equivalent for. Windows drivers
++               accept them, and games such as Euro Truck Simulator 2 pass them because Wine
++               advertises WGL_ARB_create_context_no_error; refusing them failed context creation. */
++            case 0x31b3: /* WGL_CONTEXT_OPENGL_NO_ERROR_ARB */
++            case 0x2097: /* WGL_CONTEXT_RELEASE_BEHAVIOR_ARB */
++            case 0x8256: /* WGL_CONTEXT_RESET_NOTIFICATION_STRATEGY_ARB */
++                TRACE("Ignoring %s.\n", debugstr_attrib(attr, value));
++                break;
++
+             default:
+                 WARN("Unknown attribute %s.\n", debugstr_attrib(attr, value));
+                 RtlSetLastWin32Error(ERROR_INVALID_PARAMETER);
