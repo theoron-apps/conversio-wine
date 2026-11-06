@@ -18,7 +18,7 @@
 #   scripts/build.sh package     pack dist/conversio-wine-<version>-x86_64.tar.xz
 #   scripts/build.sh all         everything above, in order
 #
-# Environment: CX_VER (default 26.3.0), REVISION (default 4), CX_SHA256 (checksum for a version
+# Environment: CX_VER (default 26.3.0), REVISION (default 5), CX_SHA256 (checksum for a version
 # that is not pinned below), BUILD_DIR (default ./build), JOBS (default: all cores).
 #
 # On Apple silicon the script re-runs itself under Rosetta and needs Intel Homebrew in /usr/local.
@@ -27,7 +27,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 CX_VER="${CX_VER:-26.3.0}"
-REVISION="${REVISION:-4}"
+REVISION="${REVISION:-5}"
 BUILD_DIR="${BUILD_DIR:-$REPO/build}"
 DIST="${DIST:-$REPO/dist}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"

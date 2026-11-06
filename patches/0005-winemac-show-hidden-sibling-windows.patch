@@ -1,0 +1,31 @@
+Conversio: show windows when their native z-order sibling is hidden.
+
+A quick Win32 minimize/restore clears WS_MINIMIZE before Cocoa finishes
+miniaturizing the window. show_window() can therefore select a sibling which
+Wine still considers on-screen but Cocoa reports as invisible. In orderBelow:
+orAbove:activate:, prev is non-nil, next is nil, and the selected "other" becomes
+nil. getSiblingWindowsForWindow: then throws while building arrayWithObject:nil,
+leaving the new MessageBox unordered and interrupting main-thread requests.
+A hidden next sibling is also unsuitable as an ordering target.
+
+Only enter the relative-ordering path when at least one sibling is visible.
+Otherwise use the existing order-front path, including parent ordering and
+window-level adjustment. Visible sibling ordering is unchanged. Reproduced with
+a standalone MinGW MessageBox test on revision 4, without Steam or D3DMetal.
+
+diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -1753,7 +1753,11 @@
+             if ([self becameEligibleParentOrChild])
+                 needAdjustWindowLevels = TRUE;
+ 
+-            if (prev || next)
++            /* Wine's z-order can still include a window Cocoa has miniaturized or
++               ordered out.  Only use a visible sibling; otherwise order to the
++               front below, rather than passing nil to getSiblingWindowsForWindow:
++               or ordering relative to a hidden window number. */
++            if ([prev isVisible] || [next isVisible])
+             {
+                 WineWindow* other = [prev isVisible] ? prev : next;
+                 NSWindowOrderingMode orderingMode = [prev isVisible] ? NSWindowBelow : NSWindowAbove;

@@ -9,7 +9,7 @@ on:
         type: string
       revision:
         description: Our build number for this CrossOver version (bump when patches change)
-        default: "3"
+        default: "5"
         type: string
       cx_sha256:
         description: SHA-256 of the source tarball, only for a version not pinned in scripts/build.sh
@@ -46,7 +46,7 @@ jobs:
     timeout-minutes: 330
     env:
       CX_VER: ${{ inputs.cx_version || '26.3.0' }}
-      REVISION: ${{ inputs.revision || '4' }}
+      REVISION: ${{ inputs.revision || '5' }}
       CX_SHA256: ${{ inputs.cx_sha256 }}
       CC: ccache clang
       CXX: ccache clang++
