@@ -13,6 +13,7 @@ typedef int (__cdecl *display_version_fn)(void *, display_version *);
 static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
 static query_fn original_query;
 static unsigned int minimum_version;
+static const WCHAR implementation_name[] = L"conversio_nvapi64.dll";
 
 static BOOL CALLBACK initialize(PINIT_ONCE init, PVOID parameter, PVOID *context)
 {
@@ -27,7 +28,14 @@ static BOOL CALLBACK initialize(PINIT_ONCE init, PVOID parameter, PVOID *context
                              NULL, &minimum_version, &size) != ERROR_SUCCESS) minimum_version = 0;
         }
     }
-    HMODULE implementation = LoadLibraryW(L"conversio_nvapi64.dll");
+    WCHAR path[MAX_PATH];
+    HMODULE implementation = NULL;
+    UINT length = GetSystemDirectoryW(path, MAX_PATH);
+    if (length && length + 1 + wcslen(implementation_name) < MAX_PATH) {
+        path[length++] = L'\\';
+        wcscpy(path + length, implementation_name);
+        implementation = LoadLibraryW(path);
+    }
     if (implementation) original_query = (query_fn)(void *)GetProcAddress(implementation, "nvapi_QueryInterface");
     return TRUE;
 }
@@ -57,6 +65,21 @@ __declspec(dllexport) void * __cdecl nvapi_QueryInterface(unsigned int id)
     if (id == 0x2926aaad) return (void *)sys_version;
     if (id == 0xf951a4d1) return (void *)get_display_version;
     return original;
+}
+
+/* GPTK's own modules use this private export to register their direct dispatch.
+ * During backend DLL initialization it can re-enter before InitOnce completes;
+ * use the already mapped module first rather than waiting on our own callback. */
+__declspec(dllexport) void * __cdecl nvapi_Direct_GetMethod(void *parameter)
+{
+    HMODULE backend = GetModuleHandleW(implementation_name);
+    if (!backend) {
+        InitOnceExecuteOnce(&once, initialize, NULL, NULL);
+        backend = GetModuleHandleW(implementation_name);
+    }
+    typedef void *(__cdecl *direct_fn)(void *);
+    direct_fn direct = backend ? (direct_fn)(void *)GetProcAddress(backend, "nvapi_Direct_GetMethod") : NULL;
+    return direct ? direct(parameter) : NULL;
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
