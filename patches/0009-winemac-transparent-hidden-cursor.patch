@@ -1,0 +1,139 @@
+Conversio: use a transparent NSCursor for Windows hidden-cursor requests.
+
+Based on the cursor-only approach proposed by Elvin Hayatov in Wine MR 11880
+(and MR 11799 v4 1/4); no GCMouse/raw-input changes are included.
+https://gitlab.winehq.org/wine/wine/-/merge_requests/11880
+
+On macOS 26 GTA5.exe can remain active, with ShowCursor count negative and
+clientWantsCursorHidden=cursorHidden=TRUE, while CGCursorIsVisible returns TRUE.
+Avoid the hide/unhide counter and reassert the empty cursor after AppKit resets.
+Cursor Location Assistance is disabled only for the Wine app, not system-wide.
+Visible Windows cursors, pointer exit and animated cursor requests are retained.
+
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -86,6 +86,22 @@
+ }
+ 
+ 
++/* A hidden cursor can be made visible by macOS Cursor Location Assistance.
++ * Keep the cursor plane visible with an empty image instead (Wine MR 11880,
++ * Elvin Hayatov). Do not accumulate NSCursor hide/unhide counts. */
++static NSCursor* transparent_cursor(void)
++{
++    static NSCursor* cursor;
++    static dispatch_once_t once;
++
++    dispatch_once(&once, ^{
++        NSImage* image = [[NSImage alloc] initWithSize:NSMakeSize(1, 1)];
++        cursor = [[NSCursor alloc] initWithImage:image hotSpot:NSZeroPoint];
++        [image release];
++    });
++    return cursor;
++}
++
+ @implementation WineApplication
+ 
+ @synthesize wineController;
+@@ -103,6 +119,13 @@
+     {
+         wineController = newController;
+         [self setDelegate:wineController];
++        /* AppKit may reset its cursor after dispatching an event. Restore only
++         * while this application owns the pointer; other apps keep their arrow. */
++        if ([NSApp isActive])
++        {
++            if (type == NSEventTypeCursorUpdate || clientWantsCursorHidden)
++                [self updateCursor:FALSE];
++        }
+     }
+ 
+ @end
+@@ -203,6 +226,8 @@
+             }
+ 
+             [self setupObservations];
++
++            NSApp.presentationOptions |= NSApplicationPresentationDisableCursorLocationAssistance;
+ 
+             keyboardType = LMGetKbdType();
+ 
+@@ -1041,38 +1066,33 @@
+ 
+     - (void) updateCursor:(BOOL)force
+     {
++        /* Borderless games do not enter Cocoa fullscreen. Keep Dock and hot
++         * corners from taking the hidden pointer at the screen edges. */
++        NSApplicationPresentationOptions mask = NSApplicationPresentationHideDock |
++                                                NSApplicationPresentationHideMenuBar;
++        NSApplicationPresentationOptions options = [NSApp presentationOptions] & ~mask;
++        if ([NSApp isActive] && clientWantsCursorHidden && [[self frontWineWindow] isFullscreen])
++            options |= mask;
++        if (options != [NSApp presentationOptions])
++            [NSApp setPresentationOptions:options];
++
+         if (force || lastTargetWindow)
+         {
+-            if (clientWantsCursorHidden && !cursorHidden)
+-            {
+-                [NSCursor hide];
+-                cursorHidden = TRUE;
+-            }
+-
+-            if (!cursorIsCurrent)
+-            {
+-                [cursor set];
++            NSCursor* desired = clientWantsCursorHidden ? transparent_cursor() : cursor;
++
++            if (force || !cursorIsCurrent || cursorHidden != clientWantsCursorHidden ||
++                (desired && [NSCursor currentCursor] != desired))
++            {
++                [desired set];
+                 cursorIsCurrent = TRUE;
+-            }
+-
+-            if (!clientWantsCursorHidden && cursorHidden)
+-            {
+-                [NSCursor unhide];
+-                cursorHidden = FALSE;
+-            }
+-        }
+-        else
+-        {
+-            if (cursorIsCurrent)
+-            {
+-                [[NSCursor arrowCursor] set];
+-                cursorIsCurrent = FALSE;
+-            }
+-            if (cursorHidden)
+-            {
+-                [NSCursor unhide];
+-                cursorHidden = FALSE;
+-            }
++                cursorHidden = clientWantsCursorHidden;
++            }
++        }
++        else if (cursorIsCurrent)
++        {
++            [[NSCursor arrowCursor] set];
++            cursorIsCurrent = FALSE;
++            cursorHidden = FALSE;
+         }
+     }
+ 
+@@ -2465,6 +2485,7 @@
+         // movement deltas are invalidated.  Make sure the next mouse move event
+         // starts over from an absolute baseline.
+         forceNextMouseMoveAbsolute = TRUE;
++        [self updateCursor:FALSE];
+     }
+ 
+     - (void)applicationDidChangeScreenParameters:(NSNotification *)notification
+@@ -2499,6 +2520,7 @@
+         }
+ 
+         [self releaseMouseCapture];
++        [self updateCursor:FALSE];
+     }
+ 
+     - (void) applicationDidUnhide:(NSNotification*)aNotification
