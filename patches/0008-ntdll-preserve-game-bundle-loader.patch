@@ -1,0 +1,23 @@
+Conversio: preserve the real game .app loader for Windows child processes.
+
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -490,6 +490,18 @@
+         bin_dir = build_relative_path( dll_dir, LIBDIR "/wine", BINDIR );
+         data_dir = build_relative_path( dll_dir, LIBDIR "/wine", DATADIR "/wine" );
+         wineloader = build_path( ntdll_dir, "wine" );
++    }
++
++    /* Conversio's opt-in game bundle keeps libraries in a normal Wine tree,
++     * but child processes must use the main .app executable to retain its
++     * LaunchServices game identity. Never resolve this path through a symlink. */
++    {
++        const char *game_loader = getenv( "CONVERSIO_GAME_LOADER" );
++        if (game_loader && game_loader[0] == '/')
++        {
++            free( (void *)wineloader );
++            wineloader = strdup( game_loader );
++        }
+     }
+ 
+     set_dll_path();
