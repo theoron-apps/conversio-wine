@@ -33,6 +33,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           find artifact -name "conversio-wine-*" -type f -exec mv {} dist/ \;
+          find artifact -name "gstreamer-runtime-sources-*" -type f -exec mv {} dist/ \;
           FILE=$(ls dist/conversio-wine-*.tar.xz | head -n 1)
           NAME=$(basename "$FILE" .tar.xz)          # conversio-wine-cx26.3.0-1-x86_64
           VERSION=${NAME#conversio-wine-cx}

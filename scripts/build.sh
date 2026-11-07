@@ -18,7 +18,7 @@
 #   scripts/build.sh package     pack dist/conversio-wine-<version>-x86_64.tar.xz
 #   scripts/build.sh all         everything above, in order
 #
-# Environment: CX_VER (default 26.3.0), REVISION (default 9), CX_SHA256 (checksum for a version
+# Environment: CX_VER (default 26.3.0), REVISION (default 10), CX_SHA256 (checksum for a version
 # that is not pinned below), BUILD_DIR (default ./build), JOBS (default: all cores).
 #
 # On Apple silicon the script re-runs itself under Rosetta and needs Intel Homebrew in /usr/local.
@@ -27,7 +27,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 CX_VER="${CX_VER:-26.3.0}"
-REVISION="${REVISION:-9}"
+REVISION="${REVISION:-10}"
 BUILD_DIR="${BUILD_DIR:-$REPO/build}"
 DIST="${DIST:-$REPO/dist}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
@@ -62,8 +62,10 @@ if [ -z "$BREW" ]; then
 fi
 BREW_PREFIX="$("$BREW" --prefix)"
 
-BUILD_DEPS="bison flex mingw-w64 pkgconf ccache"
-RUNTIME_DEPS="freetype gnutls sdl2 sdl3 molten-vk"
+BUILD_DEPS="bison flex mingw-w64 pkgconf ccache meson ninja"
+RUNTIME_DEPS="freetype gnutls sdl2 sdl3 molten-vk glib"
+
+source "$REPO/scripts/gstreamer.sh"
 
 log() { printf '\n==> %s\n' "$*"; }
 
@@ -160,6 +162,7 @@ cmd_configure() {
   CROSSCFLAGS="-O2 -g0" \
   CPPFLAGS="-I$BREW_PREFIX/include" \
   LDFLAGS="-Wl,-headerpad_max_install_names -L$BREW_PREFIX/lib" \
+  PKG_CONFIG_PATH="$GST_PREFIX/lib/pkgconfig:$BREW_PREFIX/lib/pkgconfig" \
   "$WINE_SRC/configure" \
     --prefix=/wine \
     --enable-archs=i386,x86_64 \
@@ -174,7 +177,7 @@ cmd_configure() {
     --without-cups \
     --without-dbus \
     --without-gphoto \
-    --without-gstreamer \
+    --with-gstreamer \
     --without-krb5 \
     --without-oss \
     --without-pcap \
@@ -184,6 +187,8 @@ cmd_configure() {
     --without-usb \
     --without-v4l2 \
     --without-x
+
+  grep -q winegstreamer.so Makefile || { echo "winegstreamer was not configured"; exit 1; }
 
   log "Runtime libraries Wine will load"
   grep -E '^#define SONAME_' include/config.h || true
@@ -248,7 +253,7 @@ bundle_dylib() {
   install_name_tool -id "@loader_path/$name" "$target"
   while read -r dependency; do
     case "$dependency" in
-      "$BREW_PREFIX"/*|/usr/local/*|/opt/homebrew/*)
+      "$GST_PREFIX"/*|"$BREW_PREFIX"/*|/usr/local/*|/opt/homebrew/*)
         dependency_name="$(basename "$dependency")"
         bundle_dylib "$dependency"
         install_name_tool -change "$dependency" "@loader_path/$dependency_name" "$target"
@@ -283,6 +288,8 @@ cmd_bundle() {
     ln -sf "$(basename "$sdl3")" "$WINE_ROOT/lib/libSDL3.dylib"
   fi
 
+  bundle_gstreamer
+
   log "Signing ad hoc"
   local file
   while IFS= read -r -d '' file; do
@@ -296,6 +303,7 @@ cmd_test() {
   log "Smoke test"
   # Conversio points dlopen at the bundled libraries the same way.
   export DYLD_FALLBACK_LIBRARY_PATH="$WINE_ROOT/lib:/usr/lib"
+  test_gstreamer
   "$WINE_ROOT/bin/wine" --version
 
   local dir
@@ -342,15 +350,16 @@ cmd_package() {
     echo "Builder: https://github.com/theoron-apps/conversio-wine"
     echo "License: LGPL-2.1-or-later (see COPYING.LIB). Sources are attached to the release."
   } > "$WINE_ROOT/CONVERSIO-BUILD.txt"
+  package_gstreamer_sources
   XZ_OPT="-T0 -6" tar -C "$STAGE" -cJf "$DIST/$PACKAGE.tar.xz" wine
   (cd "$DIST" && shasum -a 256 "$PACKAGE.tar.xz" > "$PACKAGE.tar.xz.sha256")
   ls -lh "$DIST"
 }
 
 case "${1:-all}" in
-  deps|fetch|apply|configure|build|install|addons|bundle|test|package) "cmd_$1" ;;
+  deps|fetch|apply|gstreamer|configure|build|install|addons|bundle|test|package) "cmd_$1" ;;
   all)
-    cmd_deps; cmd_fetch; cmd_apply; cmd_configure; cmd_build
+    cmd_deps; cmd_fetch; cmd_apply; cmd_gstreamer; cmd_configure; cmd_build
     cmd_install; cmd_addons; cmd_bundle; cmd_test; cmd_package
     ;;
   *)

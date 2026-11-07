@@ -52,3 +52,11 @@ need Sony-specific native reports can opt into Hidraw=1 as before.
  
      switch (vid)
      {
+@@ -1193,6 +1200,7 @@ NTSTATUS sdl_bus_init(void *args)
+     return STATUS_SUCCESS;
+ 
+ failed:
++    options->prefer_sdl_sony = FALSE;
+     dlclose(sdl_handle);
+     sdl_handle = NULL;
+     return STATUS_UNSUCCESSFUL;
