@@ -1,0 +1,17 @@
+Conversio: read RetinaMode from AppDefaults before the bottle default.
+
+--- a/dlls/winemac.drv/macdrv_main.c
++++ b/dlls/winemac.drv/macdrv_main.c
+@@ -412,9 +412,9 @@
+     if (!get_config_key(hkey, appkey, "EnableHDR", buffer, sizeof(buffer)))
+         enable_hdr = IS_OPTION_TRUE(buffer[0]);
+ 
+-    /* Don't use appkey.  The DPI and monitor sizes should be consistent for all
+-       processes in the prefix. */
+-    if (!get_config_key(hkey, NULL, "RetinaMode", buffer, sizeof(buffer)))
++    /* Conversio: each game chooses its backing resolution. Keep the bottle DPI
++       unchanged; Steam and launchers need not use the game's Retina setting. */
++    if (!get_config_key(hkey, appkey, "RetinaMode", buffer, sizeof(buffer)))
+         retina_enabled = IS_OPTION_TRUE(buffer[0]);
+ 
+     retina_on = retina_enabled;
