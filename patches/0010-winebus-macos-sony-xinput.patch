@@ -30,7 +30,7 @@ need Sony-specific native reports can opt into Hidraw=1 as before.
 +    /* IOHID exposes native Sony reports but does not mark them XInput-compatible.
 +     * Prefer SDL's mapped report unless the user explicitly requests raw HID.
 +     * Keep the old fallback when SDL fails or mapping was disabled. */
-+    options->prefer_sdl_sony = options->map_controllers;
++    ((struct bus_options *)args)->prefer_sdl_sony = options->map_controllers;
 +#endif
 +
      if ((quit_event = pSDL_RegisterEvents(1)) == -1)
@@ -40,7 +40,7 @@ need Sony-specific native reports can opt into Hidraw=1 as before.
      return STATUS_SUCCESS;
 
  failed:
-+    options->prefer_sdl_sony = FALSE;
++    ((struct bus_options *)args)->prefer_sdl_sony = FALSE;
      dlclose(sdl_handle);
      sdl_handle = NULL;
      return STATUS_UNSUCCESSFUL;
