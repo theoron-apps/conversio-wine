@@ -278,6 +278,9 @@ cmd_bundle() {
     [ -n "$sdl3" ] || { echo "SDL2 needs SDL3, but no libSDL3 in $BREW_PREFIX/lib"; exit 1; }
     echo "bundling $(basename "$sdl3") for SDL2"
     bundle_dylib "$sdl3"
+    # sdl2-compat dlopens this unversioned name at @loader_path. Shipping only
+    # libSDL3.0.dylib makes winebus try to show a fatal dialog off the main thread.
+    ln -sf "$(basename "$sdl3")" "$WINE_ROOT/lib/libSDL3.dylib"
   fi
 
   log "Signing ad hoc"
