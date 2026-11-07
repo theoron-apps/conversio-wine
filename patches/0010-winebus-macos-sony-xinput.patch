@@ -1,0 +1,54 @@
+Conversio: prefer SDL XInput mappings for Sony pads on macOS.
+
+DualSense 054c:0ce6 over Bluetooth is seen and mapped by the bundled SDL, but
+winebus prefers its IOHID raw report. DirectInput works; XInput returns 1167
+for every slot. Selecting Hidraw=0 for this device produces XInput success.
+
+Use SDL by default only after successful macOS SDL initialization with mapping
+enabled. Preserve other hosts, SDL-failure fallback, unknown raw devices and the
+existing Devices/<VID[/PID]>/Hidraw and EnableHidraw explicit overrides. Mapped
+SDL reports remain available to DirectInput and raw-input consumers; games that
+need Sony-specific native reports can opt into Hidraw=1 as before.
+
+--- a/dlls/winebus.sys/unixlib.h
++++ b/dlls/winebus.sys/unixlib.h
+@@ -63,6 +63,7 @@
+     BOOL disable_udevd;
+     BOOL split_controllers;
+     BOOL map_controllers;
++    BOOL prefer_sdl_sony; /* Successful mapped SDL backend on macOS. */
+     UINT mappings_count;
+     struct list devices;
+     char **mappings;
+--- a/dlls/winebus.sys/bus_sdl.c
++++ b/dlls/winebus.sys/bus_sdl.c
+@@ -1162,6 +1162,13 @@
+         goto failed;
+     }
+ 
++#ifdef __APPLE__
++    /* IOHID exposes native Sony reports but does not mark them XInput-compatible.
++     * Prefer SDL's mapped report unless the user explicitly requests raw HID.
++     * Keep the old fallback when SDL fails or mapping was disabled. */
++    options->prefer_sdl_sony = options->map_controllers;
++#endif
++
+     if ((quit_event = pSDL_RegisterEvents(1)) == -1)
+     {
+         ERR("error registering quit event\n");
+--- a/dlls/winebus.sys/main.c
++++ b/dlls/winebus.sys/main.c
+@@ -539,8 +539,11 @@
+     if (usages->Usage != HID_USAGE_GENERIC_GAMEPAD && usages->Usage != HID_USAGE_GENERIC_JOYSTICK) return TRUE;
+ 
+     if (options.disable_sdl && options.disable_input) prefer_hidraw = TRUE;
+-    if (is_dualshock4_gamepad(vid, pid)) prefer_hidraw = TRUE;
+-    if (is_dualsense_gamepad(vid, pid)) prefer_hidraw = TRUE;
++    if (!options.prefer_sdl_sony)
++    {
++        if (is_dualshock4_gamepad(vid, pid)) prefer_hidraw = TRUE;
++        if (is_dualsense_gamepad(vid, pid)) prefer_hidraw = TRUE;
++    }
+ 
+     switch (vid)
+     {
