@@ -317,9 +317,10 @@ cmd_test() {
 
   local prefix="$BUILD_DIR/test-prefix" trace="$BUILD_DIR/smoke-test.log"
   rm -rf "$prefix"
-  # macOS has no `timeout`; perl's alarm does the same. The trace shows which DLL fails to load.
+  # Python bounds the test and preserves the bundled runtime library path.
   if WINEPREFIX="$prefix" WINEDEBUG="err+all,+loaddll" \
-     perl -e 'alarm shift; exec @ARGV' 300 "$WINE_ROOT/bin/wine" cmd /c echo conversio-ok > "$trace" 2>&1; then
+     CONVERSIO_RUNTIME_LIBRARIES="$WINE_ROOT/lib:/usr/lib" \
+     python3 "$REPO/scripts/run-with-timeout.py" 300 "$WINE_ROOT/bin/wine" cmd /c echo conversio-ok > "$trace" 2>&1; then
     echo "Windows command line works:"
     grep -a "conversio-ok" "$trace" || true
   else
@@ -332,6 +333,13 @@ cmd_test() {
   fi
   echo "--- loaded and failed DLLs (first 60 lines) ---"
   grep -a -E "Loaded|err:|Failed|not found|c0000135" "$trace" | head -n 60 || true
+  x86_64-w64-mingw32-gcc "$REPO/tests/media/mf-video.c" -o "$BUILD_DIR/mf-video.exe" -lmfreadwrite -lmfplat -lmfuuid -lole32
+  local fixture
+  fixture="$(printf '%s' "$REPO/tests/media/h264-aac.mp4" | sed 's|/|\\|g')"
+  WINEPREFIX="$prefix" WINEDEBUG='-all,+gstreamer' CONVERSIO_RUNTIME_LIBRARIES="$WINE_ROOT/lib:/usr/lib" \
+    python3 "$REPO/scripts/run-with-timeout.py" 90 "$WINE_ROOT/bin/wine" "$BUILD_DIR/mf-video.exe" "Z:$fixture" \
+    > "$BUILD_DIR/mf-video.log" 2>&1 || { cat "$BUILD_DIR/mf-video.log"; exit 1; }
+  cat "$BUILD_DIR/mf-video.log"
   WINEPREFIX="$prefix" "$WINE_ROOT/bin/wineserver" -k 2>/dev/null || true
 }
 

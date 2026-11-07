@@ -16,11 +16,11 @@ cmd_gstreamer() {
   fi
   [ "$(shasum -a 256 "$GST_ARCHIVE" | awk '{print $1}')" = "$GST_SHA256" ] || { echo "GStreamer checksum mismatch"; exit 1; }
   [ -d "$GST_SOURCE" ] || tar -xzf "$GST_ARCHIVE" -C "$BUILD_DIR"
-  local reconfigure=()
-  [ ! -f "$GST_BUILD/build.ninja" ] || reconfigure=(--reconfigure)
+  local setup_command=(meson setup)
+  [ ! -f "$GST_BUILD/build.ninja" ] || setup_command+=(--reconfigure)
   CC=clang CXX=clang++ OBJC=clang OBJCXX=clang++ \
   CFLAGS='-O2 -g0' CXXFLAGS='-O2 -g0' LDFLAGS='-Wl,-headerpad_max_install_names' \
-  meson setup "${reconfigure[@]}" "$GST_BUILD" "$GST_SOURCE" \
+  "${setup_command[@]}" "$GST_BUILD" "$GST_SOURCE" \
     --prefix="$GST_PREFIX" --libdir=lib --buildtype=release \
     --auto-features=disabled --wrap-mode=nofallback \
     -Ddefault_library=shared -Dbuild-tools-source=system -Dorc-source=system \
@@ -110,6 +110,11 @@ test_gstreamer() {
     "$WINE_ROOT/bin/gst-inspect-1.0" "$element" > "$BUILD_DIR/gst-inspect-$element.log" 2>&1 || { cat "$BUILD_DIR/gst-inspect-$element.log"; exit 1; }
     grep -E 'Long-name|License|Filename' "$BUILD_DIR/gst-inspect-$element.log" || true
   done
+  CONVERSIO_RUNTIME_LIBRARIES="$WINE_ROOT/lib:/usr/lib" python3 "$REPO/scripts/run-with-timeout.py" 60 \
+    "$WINE_ROOT/bin/gst-launch-1.0" -q \
+    filesrc location="$REPO/tests/media/h264-aac.mp4" ! qtdemux name=demux \
+    demux.video_0 ! queue ! h264parse ! vtdec ! videoconvert ! 'video/x-raw,format=NV12' ! fakesink sync=false \
+    demux.audio_0 ! queue ! aacparse ! atdec ! audioconvert ! fakesink sync=false
   if otool -L "$WINE_ROOT/lib/wine/x86_64-unix/winegstreamer.so" | grep -E '/usr/local/|/opt/homebrew/|/gst-stage/'; then
     echo 'Unrelocated winegstreamer dependency'; exit 1
   fi

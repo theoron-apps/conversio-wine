@@ -148,6 +148,8 @@ jobs:
             build/make.log
             build/wine-build/config.log
             build/smoke-test.log
+            build/mf-video.log
+            build/gst-inspect-*.log
           if-no-files-found: ignore
 
       - name: Publish release
