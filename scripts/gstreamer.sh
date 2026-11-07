@@ -19,7 +19,7 @@ cmd_gstreamer() {
   [ -d "$GST_SOURCE" ] || tar -xzf "$GST_ARCHIVE" -C "$BUILD_DIR"
   local setup_command=(meson setup)
   [ ! -f "$GST_BUILD/build.ninja" ] || setup_command+=(--reconfigure)
-  CC=clang CXX=clang++ OBJC=clang OBJCXX=clang++ \
+  CC="ccache clang" CXX="ccache clang++" OBJC="ccache clang" OBJCXX="ccache clang++" \
   CFLAGS='-O2 -g0' CXXFLAGS='-O2 -g0' LDFLAGS='-Wl,-headerpad_max_install_names' \
   "${setup_command[@]}" "$GST_BUILD" "$GST_SOURCE" \
     --prefix="$GST_PREFIX" --libdir=lib --buildtype=release \
@@ -53,6 +53,9 @@ relocate_gst_file() {
     case "$dependency" in
       @rpath/*)
         name="$(basename "$dependency")"
+        # Wine's Unix modules keep their existing sibling @rpath/ntdll.so links
+        # (otool also lists each module's own @rpath ID).
+        [ ! -f "$(dirname "$target")/$name" ] || continue
         if [ -f "$GST_PREFIX/lib/$name" ]; then
           bundle_dylib "$GST_PREFIX/lib/$name"
         elif [ -f "$BREW_PREFIX/lib/$name" ]; then
@@ -101,6 +104,7 @@ bundle_gstreamer() {
     prefix="$("$BREW" --prefix "$file")"
     "$BREW" cat "$file" > "$WINE_ROOT/share/licenses/gstreamer/$file.rb"
     mkdir -p "$WINE_ROOT/share/licenses/gstreamer/$file"
+    [ -d "$prefix" ] || continue # libffi can be supplied by macOS.
     find -L "$prefix" -maxdepth 1 -type f \( -iname '*copying*' -o -iname '*license*' -o -iname '*copyright*' \) \
       -exec cp {} "$WINE_ROOT/share/licenses/gstreamer/$file/" \;
   done

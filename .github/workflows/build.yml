@@ -76,7 +76,8 @@ jobs:
           key: wine-addons-${{ env.CX_VER }}
 
       - name: Cache compiler results
-        uses: actions/cache@v4
+        id: compiler-cache
+        uses: actions/cache/restore@v4
         with:
           path: .ccache
           key: ccache-${{ env.CX_VER }}-${{ github.run_id }}
@@ -128,6 +129,13 @@ jobs:
       - name: Compiler cache stats
         if: always()
         run: command -v ccache >/dev/null && ccache -s || true
+
+      - name: Save compiler results
+        if: always() && steps.compiler-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-${{ env.CX_VER }}-${{ github.run_id }}
 
       - name: Upload build
         uses: actions/upload-artifact@v4
