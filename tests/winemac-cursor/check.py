@@ -6,6 +6,8 @@ import pathlib, subprocess, sys, tempfile
 s=(pathlib.Path(sys.argv[1])/'dlls/winemac.drv/cocoa_app.m').read_text()
 helper=s[s.index('static NSCursor* transparent_cursor'):s.index('@implementation WineApplication\n')]
 method=s[s.index('    - (void) updateCursor:(BOOL)force'):s.index('    - (void) hideCursor')]
+presentation=s[s.index('    - (void) updateCursorPresentation\n'):s.index('    - (void) updateCursor:(BOOL)force')]
+visibility=s[s.index('    - (void) hideCursor\n'):s.index('    - (void) setCursor:(NSCursor*)newCursor')]
 dispatch_method=s[s.index('    - (void) didSendEvent:(NSEvent*)anEvent\n'):s.index('    - (void) setupObservations\n    {')]
 assert 'clientWantsCursorHidden' in dispatch_method
 assert 'frontWineWindow' not in method  # No WindowServer enumeration per input event.
@@ -16,17 +18,31 @@ code='''#import <AppKit/AppKit.h>
 @interface NSObject (FullscreenTestDeclaration)
 -(BOOL)isFullscreen;
 @end
+@interface TestApplication : NSObject
+@property BOOL active;
+@property NSApplicationPresentationOptions presentationOptions;
+-(BOOL)isActive;
+@end
+@implementation TestApplication
+-(BOOL)isActive { return self.active; }
+@end
+static TestApplication* testApplication;
+#define NSApp testApplication
 @interface CursorTest : NSObject {
 @public BOOL clientWantsCursorHidden, cursorHidden, cursorIsCurrent;
+BOOL fullscreen;
 id lastTargetWindow; NSCursor* cursor;
 }
 -(void)handleCommandTab;
 -(id)frontWineWindow;
 -(void)updateCursor:(BOOL)force;
+-(void)updateCursorPresentation;
 @end
-'''+helper+'\n@implementation CursorTest\n-(void)handleCommandTab {}\n-(id)frontWineWindow { return nil; }\n'+method+dispatch_method+'''@end
+'''+helper+'\n@implementation CursorTest\n-(void)handleCommandTab {}\n-(id)frontWineWindow { return self; }\n-(BOOL)isFullscreen { return fullscreen; }\n'+presentation+method+visibility+dispatch_method+'''@end
 int main(void) { @autoreleasepool {
  [NSApplication sharedApplication];
+ testApplication=[TestApplication new];
+ testApplication.presentationOptions=NSApplicationPresentationDisableCursorLocationAssistance;
  CursorTest* t=[CursorTest new];
  t->cursor=[NSCursor crosshairCursor]; t->lastTargetWindow=t;
  [t updateCursor:NO]; assert([NSCursor currentCursor]==t->cursor);
@@ -48,7 +64,21 @@ int main(void) { @autoreleasepool {
  [t updateCursor:NO]; assert([NSCursor currentCursor]==t->cursor);
  t->lastTargetWindow=nil; [t updateCursor:NO];
  assert([NSCursor currentCursor]==[NSCursor arrowCursor]);
+ t->lastTargetWindow=t; t->fullscreen=YES; testApplication.active=YES;
+ [t hideCursor];
+ NSApplicationPresentationOptions mask=NSApplicationPresentationHideDock|NSApplicationPresentationHideMenuBar;
+ assert((testApplication.presentationOptions&mask)==mask);
+ testApplication.active=NO; [t updateCursorPresentation];
+ assert(!(testApplication.presentationOptions&mask));
+ testApplication.active=YES; [t updateCursorPresentation];
+ assert((testApplication.presentationOptions&mask)==mask);
+ t->fullscreen=NO; [t updateCursorPresentation];
+ assert(!(testApplication.presentationOptions&mask));
+ t->fullscreen=YES; [t updateCursorPresentation]; [t unhideCursor];
+ assert(!(testApplication.presentationOptions&mask));
+ assert(testApplication.presentationOptions&NSApplicationPresentationDisableCursorLocationAssistance);
  puts("PASS: visible, hidden, AppKit reset, exit/re-entry, 1000 toggles, changed visible frame");
+ puts("PASS: fullscreen Dock/menu suppression, activation/exit restore, unrelated options retained");
 } }
 '''
 with tempfile.TemporaryDirectory() as d:
