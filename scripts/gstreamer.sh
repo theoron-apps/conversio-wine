@@ -39,7 +39,8 @@ cmd_gstreamer() {
     -Dgst-plugins-good:osxaudio=enabled -Dgst-plugins-good:avi=enabled \
     -Dgst-plugins-good:deinterlace=enabled -Dgst-plugins-good:videofilter=enabled \
     -Dgst-plugins-good:wavparse=enabled -Dgst-plugins-good:matroska=enabled \
-    -Dgst-plugins-bad:videoparsers=enabled -Dgst-plugins-bad:applemedia=enabled
+    -Dgst-plugins-bad:videoparsers=enabled -Dgst-plugins-bad:gl=enabled \
+    -Dgst-plugins-bad:applemedia=enabled
   meson compile -C "$GST_BUILD" -j "$JOBS"
   meson install -C "$GST_BUILD"
 }
