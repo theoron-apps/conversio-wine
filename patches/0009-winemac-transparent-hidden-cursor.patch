@@ -35,21 +35,7 @@ Visible Windows cursors, pointer exit and animated cursor requests are retained.
  @implementation WineApplication
  
  @synthesize wineController;
-@@ -103,6 +119,13 @@
-     {
-         wineController = newController;
-         [self setDelegate:wineController];
-+        /* AppKit may reset its cursor after dispatching an event. Restore only
-+         * while this application owns the pointer; other apps keep their arrow. */
-+        if ([NSApp isActive])
-+        {
-+            if (type == NSEventTypeCursorUpdate || clientWantsCursorHidden)
-+                [self updateCursor:FALSE];
-+        }
-     }
- 
- @end
-@@ -203,6 +226,8 @@
+@@ -203,6 +219,8 @@
              }
  
              [self setupObservations];
@@ -58,7 +44,7 @@ Visible Windows cursors, pointer exit and animated cursor requests are retained.
  
              keyboardType = LMGetKbdType();
  
-@@ -1041,38 +1066,33 @@
+@@ -1041,38 +1059,33 @@
  
      - (void) updateCursor:(BOOL)force
      {
@@ -121,6 +107,20 @@ Visible Windows cursors, pointer exit and animated cursor requests are retained.
          }
      }
  
+@@ -1962,6 +1975,13 @@
+                 [self handleCommandTab];
+             }
+         }
++        /* AppKit may reset its cursor after dispatching an event. Restore only
++         * while this application owns the pointer; other apps keep their arrow. */
++        if ([NSApp isActive])
++        {
++            if (type == NSEventTypeCursorUpdate || clientWantsCursorHidden)
++                [self updateCursor:FALSE];
++        }
+     }
+ 
+     - (void) setupObservations
 @@ -2465,6 +2485,7 @@
          // movement deltas are invalidated.  Make sure the next mouse move event
          // starts over from an absolute baseline.

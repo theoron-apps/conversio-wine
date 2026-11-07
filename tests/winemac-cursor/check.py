@@ -6,9 +6,12 @@ import pathlib, subprocess, sys, tempfile
 s=(pathlib.Path(sys.argv[1])/'dlls/winemac.drv/cocoa_app.m').read_text()
 helper=s[s.index('static NSCursor* transparent_cursor'):s.index('@implementation WineApplication\n')]
 method=s[s.index('    - (void) updateCursor:(BOOL)force'):s.index('    - (void) hideCursor')]
+dispatch_method=s[s.index('    - (void) didSendEvent:(NSEvent*)anEvent\n'):s.index('    - (void) setupObservations\n    {')]
+assert 'clientWantsCursorHidden' in dispatch_method
 assert '[NSCursor hide]' not in method and '[NSCursor unhide]' not in method
 code='''#import <AppKit/AppKit.h>
 #include <assert.h>
+#import <Carbon/Carbon.h>
 @interface NSObject (FullscreenTestDeclaration)
 -(BOOL)isFullscreen;
 @end
@@ -16,10 +19,11 @@ code='''#import <AppKit/AppKit.h>
 @public BOOL clientWantsCursorHidden, cursorHidden, cursorIsCurrent;
 id lastTargetWindow; NSCursor* cursor;
 }
+-(void)handleCommandTab;
 -(id)frontWineWindow;
 -(void)updateCursor:(BOOL)force;
 @end
-'''+helper+'\n@implementation CursorTest\n-(id)frontWineWindow { return nil; }\n'+method+'''@end
+'''+helper+'\n@implementation CursorTest\n-(void)handleCommandTab {}\n-(id)frontWineWindow { return nil; }\n'+method+dispatch_method+'''@end
 int main(void) { @autoreleasepool {
  [NSApplication sharedApplication];
  CursorTest* t=[CursorTest new];
@@ -48,5 +52,5 @@ int main(void) { @autoreleasepool {
 '''
 with tempfile.TemporaryDirectory() as d:
  p=pathlib.Path(d); (p/'check.m').write_text(code)
- subprocess.run(['clang','-arch','x86_64','-fblocks','-framework','AppKit',str(p/'check.m'),'-o',str(p/'check')],check=True)
+ subprocess.run(['clang','-arch','x86_64','-fblocks','-framework','AppKit','-framework','Carbon',str(p/'check.m'),'-o',str(p/'check')],check=True)
  subprocess.run([str(p/'check')],check=True)
