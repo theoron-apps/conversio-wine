@@ -326,16 +326,23 @@ cmd_test() {
   done
   du -sh "$WINE_ROOT" "$WINE_ROOT"/lib/wine/* 2>/dev/null || true
 
+  # Hosted macOS runners have no interactive WindowServer session. Keep the
+  # actual Windows cmd/MF decode tests, using Wine's null display driver in CI.
+  if [ "${CI:-}" = true ]; then
+    export WINEDLLOVERRIDES='winemac.drv=d;winemenubuilder.exe=d;winedbg.exe=d'
+  fi
   local prefix="$BUILD_DIR/test-prefix" trace="$BUILD_DIR/smoke-test.log"
   rm -rf "$prefix"
   # Python bounds the test and preserves the bundled runtime library path.
   if WINEPREFIX="$prefix" WINEDEBUG="err+all,+loaddll" \
      CONVERSIO_RUNTIME_LIBRARIES="$WINE_ROOT/lib:/usr/lib" \
-     python3 "$REPO/scripts/run-with-timeout.py" 300 "$WINE_ROOT/bin/wine" cmd /c echo conversio-ok > "$trace" 2>&1; then
+     python3 "$REPO/scripts/run-with-timeout.py" 60 "$WINE_ROOT/bin/wine" cmd /c echo conversio-ok > "$trace" 2>&1; then
     echo "Windows command line works:"
     grep -a "conversio-ok" "$trace" || true
   else
-    echo "warning: wine cmd did not finish"
+    echo "error: wine cmd did not finish"
+    tail -n 60 "$trace"
+    exit 1
   fi
   if grep -a -q -E "NSInternalInconsistencyException|Terminating app" "$trace"; then
     echo "error: a native library crashed while Wine was starting:"
