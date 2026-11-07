@@ -25,7 +25,7 @@ need Sony-specific native reports can opt into Hidraw=1 as before.
 @@ -1162,6 +1162,13 @@
          goto failed;
      }
- 
+
 +#ifdef __APPLE__
 +    /* IOHID exposes native Sony reports but does not mark them XInput-compatible.
 +     * Prefer SDL's mapped report unless the user explicitly requests raw HID.
@@ -36,11 +36,19 @@ need Sony-specific native reports can opt into Hidraw=1 as before.
      if ((quit_event = pSDL_RegisterEvents(1)) == -1)
      {
          ERR("error registering quit event\n");
+@@ -1191,6 +1198,7 @@
+     return STATUS_SUCCESS;
+
+ failed:
++    options->prefer_sdl_sony = FALSE;
+     dlclose(sdl_handle);
+     sdl_handle = NULL;
+     return STATUS_UNSUCCESSFUL;
 --- a/dlls/winebus.sys/main.c
 +++ b/dlls/winebus.sys/main.c
 @@ -539,8 +539,11 @@
      if (usages->Usage != HID_USAGE_GENERIC_GAMEPAD && usages->Usage != HID_USAGE_GENERIC_JOYSTICK) return TRUE;
- 
+
      if (options.disable_sdl && options.disable_input) prefer_hidraw = TRUE;
 -    if (is_dualshock4_gamepad(vid, pid)) prefer_hidraw = TRUE;
 -    if (is_dualsense_gamepad(vid, pid)) prefer_hidraw = TRUE;
@@ -49,14 +57,6 @@ need Sony-specific native reports can opt into Hidraw=1 as before.
 +        if (is_dualshock4_gamepad(vid, pid)) prefer_hidraw = TRUE;
 +        if (is_dualsense_gamepad(vid, pid)) prefer_hidraw = TRUE;
 +    }
- 
+
      switch (vid)
      {
-@@ -1193,6 +1200,7 @@ NTSTATUS sdl_bus_init(void *args)
-     return STATUS_SUCCESS;
- 
- failed:
-+    options->prefer_sdl_sony = FALSE;
-     dlclose(sdl_handle);
-     sdl_handle = NULL;
-     return STATUS_UNSUCCESSFUL;
