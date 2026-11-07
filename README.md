@@ -11,7 +11,7 @@ Each build is made from the open-source Wine that CodeWeavers publishes with eve
 | Wine | CrossOver's Wine from `crossover-sources-<version>.tar.gz`, plus our patches from [`patches/`](patches) |
 | Architecture | x86_64; Apple silicon runs it through Rosetta 2 |
 | 32-bit programs | Through WoW64, so installers and launchers work without 32-bit macOS libraries |
-| Bundled libraries | FreeType (fonts), GnuTLS (HTTPS), SDL2 (game controllers), MoltenVK (Vulkan → Metal) |
+| Bundled libraries | FreeType (fonts), GnuTLS (HTTPS), SDL2-compat + SDL3 (game controllers), MoltenVK (Vulkan → Metal), GStreamer (game video/audio) |
 | Add-ons | Wine Mono (.NET) and Wine Gecko (HTML engine) in the versions this Wine expects, so Wine never asks to download them |
 | Not included | Apple's D3DMetal: Apple doesn't allow redistributing it. Conversio imports it from the free Game Porting Toolkit on your Mac |
 
@@ -33,6 +33,20 @@ arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebr
 
 The result is `dist/conversio-wine-cx<version>-<build>-x86_64.tar.xz`.
 
+## Game input and video
+
+On macOS, mapped SDL controllers provide XInput and DirectInput. Sony pads use
+this route by default once SDL starts successfully; the existing winebus
+`Devices/<VID[/PID]>/Hidraw` override retains native reports when a game needs them.
+See [controller checks](tests/gamepads/README.md) for probes and Steam Input tests.
+
+GStreamer is built from pinned sources with GPL, libav and ugly plugins disabled.
+H.264/HEVC decoding uses macOS VideoToolbox and AAC uses AudioToolbox. Plugins,
+shared dependencies and the scanner live inside the Wine engine; users do not
+need Homebrew. Conversio supplies plugin paths and a registry cache per bottle.
+The build checks packaged plugins, H.264/AAC decoding and Wine Media Foundation;
+see [media checks](tests/media/README.md).
+
 ## A new CrossOver version
 
 1. Run the workflow with the new `cx_version` and an empty `cx_sha256`. The fetch step fails and prints the tarball's checksum.
@@ -41,6 +55,13 @@ The result is `dist/conversio-wine-cx<version>-<build>-x86_64.tar.xz`.
 ## License
 
 Wine is licensed under the [LGPL-2.1-or-later](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html). Every release carries the exact CodeWeavers source tarball it was built from, and our changes are the patches in this repository. The scripts in this repository are MIT licensed.
+
+GStreamer and its GLib dependencies have their own notices in
+`wine/share/licenses/gstreamer`. Releases containing media support also attach
+`gstreamer-runtime-sources-<version>.tar.xz`, with the pinned GStreamer tree,
+dependency source archives, Homebrew recipes and checksums. These are shared
+libraries which can be replaced/relinked. Apple's codec frameworks remain part
+of macOS and are not redistributed.
 
 CrossOver is a trademark of CodeWeavers. This project is not affiliated with CodeWeavers, Apple or Valve.
 
