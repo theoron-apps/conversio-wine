@@ -48,6 +48,17 @@ relocate_gst_file() {
   relative="$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1],os.path.dirname(sys.argv[2])))' "$WINE_ROOT/lib" "$target")"
   while read -r dependency; do
     case "$dependency" in
+      @rpath/*)
+        name="$(basename "$dependency")"
+        if [ -f "$GST_PREFIX/lib/$name" ]; then
+          bundle_dylib "$GST_PREFIX/lib/$name"
+        elif [ -f "$BREW_PREFIX/lib/$name" ]; then
+          bundle_dylib "$BREW_PREFIX/lib/$name"
+        else
+          echo "Unresolved dependency $dependency in $target"; exit 1
+        fi
+        install_name_tool -change "$dependency" "@loader_path/$relative/$name" "$target"
+        ;;
       "$GST_PREFIX"/*|"$BREW_PREFIX"/*|/usr/local/*|/opt/homebrew/*)
         name="$(basename "$dependency")"
         # A dylib's own LC_ID_DYLIB is also listed by otool.

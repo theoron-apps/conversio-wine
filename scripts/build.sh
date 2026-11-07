@@ -253,6 +253,17 @@ bundle_dylib() {
   install_name_tool -id "@loader_path/$name" "$target"
   while read -r dependency; do
     case "$dependency" in
+      @rpath/*)
+        dependency_name="$(basename "$dependency")"
+        if [ -f "$GST_PREFIX/lib/$dependency_name" ]; then
+          bundle_dylib "$GST_PREFIX/lib/$dependency_name"
+        elif [ -f "$BREW_PREFIX/lib/$dependency_name" ]; then
+          bundle_dylib "$BREW_PREFIX/lib/$dependency_name"
+        else
+          echo "Unresolved dependency $dependency in $target"; exit 1
+        fi
+        install_name_tool -change "$dependency" "@loader_path/$dependency_name" "$target"
+        ;;
       "$GST_PREFIX"/*|"$BREW_PREFIX"/*|/usr/local/*|/opt/homebrew/*)
         dependency_name="$(basename "$dependency")"
         bundle_dylib "$dependency"
