@@ -1,0 +1,39 @@
+Conversio: release D3DMetal surfaces outside the window-data lock.
+
+GTA V can deadlock while destroying a swapchain window. DestroyWindow holds
+win_data_mutex and CFReleases the D3DMetal surface array; its release callback
+enters client_surface_release and waits for win32u's surfaces_lock. Another
+thread processing CLIENT_SURFACE_PRESENTED holds surfaces_lock and waits for
+win_data_mutex in macdrv_client_surface_present. Move only the array release
+after the window-data lock is released. win32u has already detached the window's
+client surfaces before invoking the driver's DestroyWindow.
+
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -1323,6 +1323,7 @@
+ void macdrv_DestroyWindow(HWND hwnd)
+ {
+     struct macdrv_win_data *data;
++    CFMutableArrayRef surfaces;
+ 
+     TRACE("%p\n", hwnd);
+ 
+@@ -1334,11 +1335,17 @@
+     destroy_cocoa_window(data);
+ 
+     /* CW HACK 22435 */
+-    if (data->d3dmetal_client_surfaces) CFRelease(data->d3dmetal_client_surfaces);
++    surfaces = data->d3dmetal_client_surfaces;
+ 
+     CFDictionaryRemoveValue(win_datas, hwnd);
+     release_win_data(data);
+     free(data);
++
++    /* The array's release callback takes win32u's surfaces_lock.  Present and
++       detach take that lock before win_data_mutex, so do not release the
++       array while holding the window-data lock.  The window has already
++       been removed from win_datas and its surfaces detached by win32u. */
++    if (surfaces) CFRelease(surfaces);
+ }
+ 
+ 
