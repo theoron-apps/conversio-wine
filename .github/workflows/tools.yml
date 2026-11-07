@@ -30,6 +30,9 @@ jobs:
       - name: Build CEF wrapper
         run: make -C tools/steamwebhelper CC=x86_64-w64-mingw32-gcc
 
+      - name: Build NVAPI version proxy
+        run: make -C tools/nvapi-version-proxy CC=x86_64-w64-mingw32-gcc
+
       - name: Publish
         run: |
           set -euo pipefail
@@ -37,12 +40,14 @@ jobs:
           # One binary under two names: older Conversio builds download steamwebhelper-wrapper.exe.
           cp tools/steamwebhelper/steamwebhelper-wrapper.exe dist/cef-wrapper.exe
           cp tools/steamwebhelper/steamwebhelper-wrapper.exe dist/
-          (cd dist && sha256sum cef-wrapper.exe > cef-wrapper.exe.sha256 && sha256sum steamwebhelper-wrapper.exe > steamwebhelper-wrapper.exe.sha256)
+          cp tools/nvapi-version-proxy/nvapi-version-proxy.dll dist/
+          (cd dist && sha256sum nvapi-version-proxy.dll > nvapi-version-proxy.dll.sha256 && sha256sum cef-wrapper.exe > cef-wrapper.exe.sha256 && sha256sum steamwebhelper-wrapper.exe > steamwebhelper-wrapper.exe.sha256)
           TAG="tools-${GITHUB_RUN_NUMBER}"
           cat > notes.md <<NOTES
           Windows helpers for Conversio, built from \`tools/\` at ${GITHUB_SHA}.
 
           - \`cef-wrapper.exe\` takes the place of a CEF helper and starts \`<name>_real.exe\` with switches picked by its own name: \`steamwebhelper.exe\` gets \`--disable-gpu --single-process\`, Rockstar's \`SocialClubHelper.exe\` gets \`--in-process-gpu --disable-gpu --disable-gpu-compositing --disable-software-rasterizer\`.
           - \`steamwebhelper-wrapper.exe\` is the same file under its old name, for older Conversio builds.
+          - \`nvapi-version-proxy.dll\` forwards NVAPI to the imported GPTK; only two driver-version replies can be raised by per-executable AppDefaults. Apple libraries are not redistributed.
           NOTES
           gh release create "$TAG" dist/* --title "Tools ${GITHUB_RUN_NUMBER}" --notes-file notes.md --target "$GITHUB_SHA" --latest=false
