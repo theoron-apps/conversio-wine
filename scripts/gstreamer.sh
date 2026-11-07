@@ -36,6 +36,7 @@ cmd_gstreamer() {
     -Dgst-plugins-base:gl_platform=cgl -Dgst-plugins-base:gl_winsys=cocoa \
     -Dgst-plugins-good:isomp4=enabled -Dgst-plugins-good:audioparsers=enabled \
     -Dgst-plugins-good:osxaudio=enabled -Dgst-plugins-good:avi=enabled \
+    -Dgst-plugins-good:deinterlace=enabled -Dgst-plugins-good:videofilter=enabled \
     -Dgst-plugins-good:wavparse=enabled -Dgst-plugins-good:matroska=enabled \
     -Dgst-plugins-bad:videoparsers=enabled -Dgst-plugins-bad:applemedia=enabled
   meson compile -C "$GST_BUILD" -j "$JOBS"
@@ -117,7 +118,7 @@ test_gstreamer() {
   export GST_PLUGIN_SYSTEM_PATH_1_0="$WINE_ROOT/lib/gstreamer-1.0"
   export GST_PLUGIN_PATH_1_0="" GST_PLUGIN_PATH="" GST_PLUGIN_SYSTEM_PATH=""
   export GST_PLUGIN_SCANNER_1_0="$WINE_ROOT/libexec/gst-plugin-scanner" GST_REGISTRY_1_0="$registry"
-  for element in appsrc appsink decodebin qtdemux h264parse aacparse vtdec atdec videoconvert audioconvert audioresample; do
+  for element in appsrc appsink decodebin qtdemux h264parse aacparse vtdec atdec videoconvert videoflip deinterlace audioconvert audioresample; do
     "$WINE_ROOT/bin/gst-inspect-1.0" "$element" > "$BUILD_DIR/gst-inspect-$element.log" 2>&1 || { cat "$BUILD_DIR/gst-inspect-$element.log"; exit 1; }
     grep -E 'Long-name|License|Filename' "$BUILD_DIR/gst-inspect-$element.log" || true
   done

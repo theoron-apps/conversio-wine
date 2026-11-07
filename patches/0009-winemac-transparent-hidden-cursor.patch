@@ -14,7 +14,7 @@ Visible Windows cursors, pointer exit and animated cursor requests are retained.
 +++ b/dlls/winemac.drv/cocoa_app.m
 @@ -86,6 +86,22 @@
  }
- 
+
  
 +/* A hidden cursor can be made visible by macOS Cursor Location Assistance.
 + * Keep the cursor plane visible with an empty image instead (Wine MR 11880,
@@ -33,21 +33,39 @@ Visible Windows cursors, pointer exit and animated cursor requests are retained.
 +}
 +
  @implementation WineApplication
- 
+
  @synthesize wineController;
-@@ -203,6 +219,8 @@
+@@ -119,6 +135,7 @@
+ @property (retain, nonatomic) WineWindow* mouseCaptureWindow;
+
+     - (void) setupObservations;
++    - (void) updateCursorPresentation;
+     - (void) applicationDidBecomeActive:(NSNotification *)notification;
+     - (void) handleApplicationShouldTerminateReply:(BOOL)reply;  /* CW Hack 22310 */
+
+@@ -203,6 +220,8 @@
              }
- 
+
              [self setupObservations];
 +
 +            NSApp.presentationOptions |= NSApplicationPresentationDisableCursorLocationAssistance;
- 
+
              keyboardType = LMGetKbdType();
- 
-@@ -1041,38 +1059,33 @@
- 
-     - (void) updateCursor:(BOOL)force
+
+@@ -816,6 +835,7 @@
+
+     - (void) updateFullscreenWindows
      {
++        [self updateCursorPresentation];
+         if (capture_displays_for_fullscreen && [NSApp isActive])
+         {
+             BOOL anyFullscreen = FALSE;
+@@ -1039,40 +1059,39 @@
+         return ([originalDisplayModes count] > 0 || displaysCapturedForFullscreen);
+     }
+
++    - (void) updateCursorPresentation
++    {
 +        /* Borderless games do not enter Cocoa fullscreen. Keep Dock and hot
 +         * corners from taking the hidden pointer at the screen edges. */
 +        NSApplicationPresentationOptions mask = NSApplicationPresentationHideDock |
@@ -58,6 +76,10 @@ Visible Windows cursors, pointer exit and animated cursor requests are retained.
 +        if (options != [NSApp presentationOptions])
 +            [NSApp setPresentationOptions:options];
 +
++    }
++
+     - (void) updateCursor:(BOOL)force
+     {
          if (force || lastTargetWindow)
          {
 -            if (clientWantsCursorHidden && !cursorHidden)
@@ -106,8 +128,24 @@ Visible Windows cursors, pointer exit and animated cursor requests are retained.
 +            cursorHidden = FALSE;
          }
      }
- 
-@@ -1962,6 +1975,13 @@
+
+@@ -1081,6 +1100,7 @@
+         if (!clientWantsCursorHidden)
+         {
+             clientWantsCursorHidden = TRUE;
++            [self updateCursorPresentation];
+             [self updateCursor:TRUE];
+         }
+     }
+@@ -1090,6 +1110,7 @@
+         if (clientWantsCursorHidden)
+         {
+             clientWantsCursorHidden = FALSE;
++            [self updateCursorPresentation];
+             [self updateCursor:FALSE];
+         }
+     }
+@@ -1962,6 +1983,13 @@
                  [self handleCommandTab];
              }
          }
@@ -119,21 +157,22 @@ Visible Windows cursors, pointer exit and animated cursor requests are retained.
 +                [self updateCursor:FALSE];
 +        }
      }
- 
+
      - (void) setupObservations
-@@ -2465,6 +2485,7 @@
+@@ -2465,6 +2493,7 @@
          // movement deltas are invalidated.  Make sure the next mouse move event
          // starts over from an absolute baseline.
          forceNextMouseMoveAbsolute = TRUE;
 +        [self updateCursor:FALSE];
      }
- 
+
      - (void)applicationDidChangeScreenParameters:(NSNotification *)notification
-@@ -2499,6 +2520,7 @@
+@@ -2499,6 +2528,8 @@
          }
- 
+
          [self releaseMouseCapture];
++        [self updateCursorPresentation];
 +        [self updateCursor:FALSE];
      }
- 
+
      - (void) applicationDidUnhide:(NSNotification*)aNotification

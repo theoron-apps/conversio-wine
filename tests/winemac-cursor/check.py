@@ -8,6 +8,7 @@ helper=s[s.index('static NSCursor* transparent_cursor'):s.index('@implementation
 method=s[s.index('    - (void) updateCursor:(BOOL)force'):s.index('    - (void) hideCursor')]
 dispatch_method=s[s.index('    - (void) didSendEvent:(NSEvent*)anEvent\n'):s.index('    - (void) setupObservations\n    {')]
 assert 'clientWantsCursorHidden' in dispatch_method
+assert 'frontWineWindow' not in method  # No WindowServer enumeration per input event.
 assert '[NSCursor hide]' not in method and '[NSCursor unhide]' not in method
 code='''#import <AppKit/AppKit.h>
 #include <assert.h>
