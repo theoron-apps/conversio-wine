@@ -8,6 +8,7 @@ GST_PREFIX="$BUILD_DIR/gst-stage"
 GST_BUILD="$BUILD_DIR/gst-build"
 
 cmd_gstreamer() {
+  use_tools
   log "Building LGPL GStreamer $GST_VERSION (Apple H.264/HEVC/AAC decoders)"
   mkdir -p "$BUILD_DIR"
   if [ ! -f "$GST_ARCHIVE" ]; then
