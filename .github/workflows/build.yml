@@ -15,10 +15,6 @@ on:
         description: SHA-256 of the source tarball, only for a version not pinned in scripts/build.sh
         default: ""
         type: string
-      publish:
-        description: Publish a GitHub release that Conversio downloads
-        default: false
-        type: boolean
   push:
     branches: [main]
     paths:
@@ -130,16 +126,8 @@ jobs:
             tests/media/h264-aac.mp4
           retention-days: 7
 
-      - name: Smoke test
-        run: scripts/build.sh test
-
-      - name: Upload smoke test log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: smoke-test-cx${{ env.CX_VER }}-${{ env.REVISION }}
-          path: build/smoke-test.log
-          if-no-files-found: ignore
+      - name: Native packaged media test
+        run: scripts/build.sh test-native
 
       - name: Package
         run: scripts/build.sh package
@@ -162,6 +150,12 @@ jobs:
           path: dist/
           retention-days: 14
 
+      - name: Upload Windows media probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: wine-smoke-probe-${{ github.run_id }}
+          path: build/mf-video.exe
+
       - name: Upload logs
         if: failure()
         uses: actions/upload-artifact@v4
@@ -178,18 +172,33 @@ jobs:
             build/gst-inspect-*.log
           if-no-files-found: ignore
 
-      - name: Publish release
-        if: ${{ inputs.publish }}
-        env:
-          GH_TOKEN: ${{ github.token }}
+  smoke:
+    name: Windows cmd and Media Foundation (Apple silicon)
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Rosetta
+        run: arch -x86_64 /usr/bin/true
+      - uses: actions/download-artifact@v4
+        with:
+          name: conversio-wine-cx${{ inputs.cx_version || '26.3.0' }}-${{ inputs.revision || '10' }}
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: wine-smoke-probe-${{ github.run_id }}
+          path: probe
+      - name: Extract exact release archive
         run: |
-          TAG="cx${CX_VER}-${REVISION}"
-          cp "build/crossover-sources-${CX_VER}.tar.gz" dist/
-          cat > notes.md <<EOF
-          Wine from CrossOver ${CX_VER} sources, build ${REVISION}, for Conversio.
-
-          - \`conversio-wine-cx${CX_VER}-${REVISION}-x86_64.tar.xz\` — the Wine that Conversio downloads (x86_64, runs on Apple silicon through Rosetta 2).
-          - \`crossover-sources-${CX_VER}.tar.gz\` — the exact CodeWeavers sources it was built from (LGPL-2.1-or-later). Our patches are in \`patches/\` at commit ${GITHUB_SHA}.
-          EOF
-          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "$TAG" dist/* --title "Wine ${CX_VER} (${REVISION})" --notes-file notes.md --target "$GITHUB_SHA"
+          cd dist
+          shasum -a 256 -c conversio-wine-*.tar.xz.sha256
+          mkdir -p ../build/stage
+          tar -xJf conversio-wine-*-x86_64.tar.xz -C ../build/stage
+      - name: Required Windows startup and H264 decode
+        run: tests/media/check-headless.sh "$PWD/build/stage/wine" "$PWD/probe/mf-video.exe" "$PWD/tests/media/h264-aac.mp4"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-smoke-logs-${{ github.run_id }}
+          path: build/headless-*.log

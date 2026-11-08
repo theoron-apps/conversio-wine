@@ -25,6 +25,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Require all Build Wine checks
+        run: |
+          gh run view "${{ inputs.run_id }}" --json status,conclusion,workflowName > run.json
+          jq -e '.status == "completed" and .conclusion == "success" and .workflowName == "Build Wine"' run.json
+
       - name: Download the build
         run: gh run download "${{ inputs.run_id }}" --dir artifact --pattern "conversio-wine-*"
 

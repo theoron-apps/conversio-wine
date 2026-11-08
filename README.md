@@ -17,7 +17,16 @@ Each build is made from the open-source Wine that CodeWeavers publishes with eve
 
 ## Building
 
-**On GitHub:** Actions → **Build Wine** → **Run workflow**. Pick the CrossOver version and turn on **publish** to make a release. A first build takes about two hours; later ones are faster thanks to the compiler cache.
+**On GitHub:** Actions → **Build Wine** → **Run workflow**. After every job succeeds,
+run **Publish Wine** with that build's run ID. The publish workflow rejects failed
+or unfinished builds. A first build takes about two hours; later ones use the compiler cache.
+
+Compilation and native packaged-codec checks run on Intel. The exact release
+archive must also pass Windows startup and ten Media Foundation H.264 samples
+under Rosetta on Apple silicon/macOS 26, Conversio's target platform. Native Intel
+Wine startup hangs in explorer on the hosted macOS 15 runner; that is not accepted
+as a substitute for the required Apple silicon checks. Initial WoW64 registration
+has a bounded three-minute startup budget; decode retains its separate deadline.
 
 **On a Mac:**
 

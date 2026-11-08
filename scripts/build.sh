@@ -310,12 +310,17 @@ cmd_bundle() {
   done < <(find "$WINE_ROOT" -type f -print0)
 }
 
-cmd_test() {
-  log "Smoke test"
+cmd_test_native() {
+  log "Native runtime test"
   # Conversio points dlopen at the bundled libraries the same way.
   export DYLD_FALLBACK_LIBRARY_PATH="$WINE_ROOT/lib:/usr/lib"
   test_gstreamer
   "$WINE_ROOT/bin/wine" --version
+}
+
+cmd_test() {
+  log "Smoke test"
+  cmd_test_native
 
   local dir
   for dir in x86_64-windows i386-windows x86_64-unix; do
@@ -342,12 +347,15 @@ WINE REGISTRY Version 2
 
 [Software\\Wine\\DllOverrides] 0
 "winemac.drv"=""
+
+[Software\\Wine\\Drivers] 0
+"Graphics"="null"
 REG
   fi
   # Python bounds the test and preserves the bundled runtime library path.
   if WINEPREFIX="$prefix" WINEDEBUG="err+all,+loaddll" \
      CONVERSIO_RUNTIME_LIBRARIES="$WINE_ROOT/lib:/usr/lib" \
-     python3 "$REPO/scripts/run-with-timeout.py" 60 "$WINE_ROOT/bin/wine" cmd /c echo conversio-ok > "$trace" 2>&1; then
+     python3 "$REPO/scripts/run-with-timeout.py" 180 "$WINE_ROOT/bin/wine" cmd /c echo conversio-ok > "$trace" 2>&1; then
     echo "Windows command line works:"
     grep -a "conversio-ok" "$trace" || true
   else
@@ -394,6 +402,7 @@ cmd_package() {
 }
 
 case "${1:-all}" in
+  test-native) cmd_test_native ;;
   deps|fetch|apply|gstreamer|configure|build|install|addons|bundle|test|package) "cmd_$1" ;;
   all)
     cmd_deps; cmd_fetch; cmd_apply; cmd_gstreamer; cmd_configure; cmd_build
