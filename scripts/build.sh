@@ -333,6 +333,17 @@ cmd_test() {
   fi
   local prefix="$BUILD_DIR/test-prefix" trace="$BUILD_DIR/smoke-test.log"
   rm -rf "$prefix"
+  if [ "${CI:-}" = true ]; then
+    # CrossOver wineboot replaces WINEDLLOVERRIDES for rundll32. Registry
+    # overrides survive that replacement and keep all boot children headless.
+    mkdir -p "$prefix"
+    cat > "$prefix/user.reg" <<'REG'
+WINE REGISTRY Version 2
+
+[Software\\Wine\\DllOverrides] 0
+"winemac.drv"=""
+REG
+  fi
   # Python bounds the test and preserves the bundled runtime library path.
   if WINEPREFIX="$prefix" WINEDEBUG="err+all,+loaddll" \
      CONVERSIO_RUNTIME_LIBRARIES="$WINE_ROOT/lib:/usr/lib" \
