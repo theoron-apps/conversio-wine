@@ -112,6 +112,24 @@ jobs:
       - name: Bundle libraries
         run: scripts/build.sh bundle
 
+      - name: Prepare diagnostic candidate
+        run: |
+          x86_64-w64-mingw32-gcc tests/media/mf-video.c -o build/mf-video.exe -lmfreadwrite -lmfplat -lmfuuid -lole32
+          XZ_OPT='-T0 -1' tar -C build/stage -cJf build/wine-candidate.tar.xz wine
+
+      # This unpublished artifact is deliberately excluded from Publish Wine's
+      # conversio-wine-* pattern. It allows diagnosis on an interactive Mac
+      # while the mandatory CI cmd/MF gates remain unchanged.
+      - name: Upload diagnostic candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostic-wine-${{ github.run_id }}
+          path: |
+            build/wine-candidate.tar.xz
+            build/mf-video.exe
+            tests/media/h264-aac.mp4
+          retention-days: 7
+
       - name: Smoke test
         run: scripts/build.sh test
 
