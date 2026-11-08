@@ -11,10 +11,14 @@ permissions:
   actions: read
 jobs:
   headless:
-    runs-on: macos-15-intel
+    runs-on: macos-26
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: Verify Apple silicon runtime
+        run: |
+          uname -m
+          arch -x86_64 /usr/bin/true
       - uses: actions/download-artifact@v4
         with:
           name: diagnostic-wine-${{ inputs.run_id }}
