@@ -44,6 +44,10 @@ The result is `dist/conversio-wine-cx<version>-<build>-x86_64.tar.xz`.
 
 ## Game input and video
 
+Retina display DC dimensions are forwarded from win32u without a second scale
+factor (patch 0011). This keeps Unity's GDI size consistent with DXGI and
+EnumDisplaySettings instead of reporting twice the real native resolution.
+
 On macOS, mapped SDL controllers provide XInput and DirectInput. Sony pads use
 this route by default once SDL starts successfully; the existing winebus
 `Devices/<VID[/PID]>/Hidraw` override retains native reports when a game needs them.

@@ -1,0 +1,25 @@
+Conversio: do not double Retina display dimensions again in GetDeviceCaps.
+
+CrossOver 26.3 win32u's null DC driver already gets HORZRES/VERTRES from the
+display rectangle/system metrics populated by winemac. With Retina enabled,
+those are already physical dimensions. The extra winemac shift reports
+6912x4468 for a 3456x2234 display, while EnumDisplaySettings and DXGI report
+3456x2234. Unity 2019 then requests an impossible fullscreen mode and its UI
+can be cropped. Preserve physical millimetres and all other forwarded caps.
+
+--- a/dlls/winemac.drv/gdi.c
++++ b/dlls/winemac.drv/gdi.c
+@@ -218,10 +218,9 @@
+     default:
+         pthread_mutex_unlock(&device_data_mutex);
+         dev = GET_NEXT_PHYSDEV( dev, pGetDeviceCaps );
+-        ret = dev->funcs->pGetDeviceCaps( dev, cap );
+-        if ((cap == HORZRES || cap == VERTRES) && retina_on)
+-            ret *= 2;
+-        return ret;
++        /* win32u already uses the display rectangle, including Retina scaling.
++         * Multiplying it again disagrees with EnumDisplaySettings and DXGI. */
++        return dev->funcs->pGetDeviceCaps( dev, cap );
+     }
+ 
+     TRACE("cap %d -> %d\n", cap, ret);

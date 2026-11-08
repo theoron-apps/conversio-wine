@@ -1,0 +1,3 @@
+#include <windows.h>
+#include <stdio.h>
+int main(){HDC dc=GetDC(0);printf("unaware screen=%dx%d HORZRES=%d VERTRES=%d DESKTOP=%dx%d DPI=%dx%d\n",GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),GetDeviceCaps(dc,HORZRES),GetDeviceCaps(dc,VERTRES),GetDeviceCaps(dc,DESKTOPHORZRES),GetDeviceCaps(dc,DESKTOPVERTRES),GetDeviceCaps(dc,LOGPIXELSX),GetDeviceCaps(dc,LOGPIXELSY));ReleaseDC(0,dc);SetProcessDPIAware();dc=GetDC(0);printf("aware screen=%dx%d HORZRES=%d VERTRES=%d DESKTOP=%dx%d DPI=%dx%d\n",GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),GetDeviceCaps(dc,HORZRES),GetDeviceCaps(dc,VERTRES),GetDeviceCaps(dc,DESKTOPHORZRES),GetDeviceCaps(dc,DESKTOPVERTRES),GetDeviceCaps(dc,LOGPIXELSX),GetDeviceCaps(dc,LOGPIXELSY));ReleaseDC(0,dc);}
