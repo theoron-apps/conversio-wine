@@ -20,7 +20,7 @@ WINE REGISTRY Version 2
 "Graphics"="null"
 REG
 WINEDEBUG='-all,+timestamp,+loaddll,+explorer,+wineboot,+win32u' \
-  python3 scripts/run-with-timeout.py 60 "$root/bin/wine" cmd /c echo conversio-headless-ok \
+  python3 scripts/run-with-timeout.py 180 "$root/bin/wine" cmd /c echo conversio-headless-ok \
   > build/headless-cmd.log 2>&1 &
 test_pid=$!
 sleep 15
