@@ -27,7 +27,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 CX_VER="${CX_VER:-26.3.0}"
-REVISION="${REVISION:-11}"
+REVISION="${REVISION:-12}"
 BUILD_DIR="${BUILD_DIR:-$REPO/build}"
 DIST="${DIST:-$REPO/dist}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"

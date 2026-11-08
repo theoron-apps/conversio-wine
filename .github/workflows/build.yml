@@ -42,7 +42,7 @@ jobs:
     timeout-minutes: 330
     env:
       CX_VER: ${{ inputs.cx_version || '26.3.0' }}
-      REVISION: ${{ inputs.revision || '11' }}
+      REVISION: ${{ inputs.revision || '12' }}
       CX_SHA256: ${{ inputs.cx_sha256 }}
       CC: ccache clang
       CXX: ccache clang++
@@ -186,7 +186,7 @@ jobs:
         run: arch -x86_64 /usr/bin/true
       - uses: actions/download-artifact@v4
         with:
-          name: conversio-wine-cx${{ inputs.cx_version || '26.3.0' }}-${{ inputs.revision || '11' }}
+          name: conversio-wine-cx${{ inputs.cx_version || '26.3.0' }}-${{ inputs.revision || '12' }}
           path: dist
       - uses: actions/download-artifact@v4
         with:
