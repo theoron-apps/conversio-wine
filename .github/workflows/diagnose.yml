@@ -1,0 +1,35 @@
+name: Diagnose Wine candidate
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Build run containing an unpublished diagnostic-wine artifact
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  headless:
+    runs-on: macos-15-intel
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: diagnostic-wine-${{ inputs.run_id }}
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: candidate
+      - name: Extract complete candidate
+        run: |
+          mkdir -p build/stage
+          tar -xJf candidate/build/wine-candidate.tar.xz -C build/stage
+      - name: Test explicit null graphics
+        shell: bash
+        run: tests/media/check-headless.sh "$PWD/build/stage/wine" "$PWD/candidate/build/mf-video.exe" "$PWD/tests/media/h264-aac.mp4"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: headless-diagnostics-${{ github.run_id }}
+          path: build/headless-*.log
