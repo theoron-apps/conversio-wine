@@ -1,0 +1,141 @@
+Conversio: keep a captured hidden cursor away from macOS hot corners.
+
+GTA V Enhanced hides the cursor and clips it to the whole screen. With the
+default confinement clipping the invisible cursor still travels to the screen
+corners (seen at 1728,1117), so macOS hot corners (Notification Center, Quick
+Note, ...) fire. Patch 0009 only hid the Dock/menu bar.
+
+While the app is active, the client wants the cursor hidden and the front
+window is fullscreen, shrink the macOS confinement rect by 4 points from the
+screen edges. Mouse association and event handling are unchanged; at the inner
+edge winemac already sends relative motion. The requested Windows rect is kept
+and restored when the cursor is shown, the window leaves fullscreen or the app
+deactivates. ClipCursor(NULL) is never turned into a confinement.
+
+Revision 12 detached the cursor from the mouse instead; GTA's own menu cursor
+(hidden for Wine, drawn by the game) then jumped to the frozen macOS position.
+
+diff --git a/dlls/winemac.drv/cocoa_app.h b/dlls/winemac.drv/cocoa_app.h
+--- a/dlls/winemac.drv/cocoa_app.h
++++ b/dlls/winemac.drv/cocoa_app.h
+@@ -64,6 +64,8 @@
+     WineWindow* lastTargetWindow;
+     WineWindow* mouseCaptureWindow;
+     BOOL forceNextMouseMoveAbsolute;
++    CGRect requestedCursorClipRect;
++    BOOL cursorClipInset;
+     double mouseMoveDeltaX, mouseMoveDeltaY;
+     NSUInteger unmatchedMouseDowns;
+ 
+@@ -110,6 +112,7 @@
+ @property (nonatomic, copy) NSString *explicitAppUserModelID;  /* CW Hack 22310 */
+ 
+ @property (readonly) BOOL clippingCursor;
++    - (int) applyCursorClipRect:(CGRect)r;
+ @property (nonatomic) NSTimeInterval lastSetCursorPositionTime;
+ 
+     + (WineApplicationController*) sharedController;
+diff --git a/dlls/winemac.drv/cocoa_app.m b/dlls/winemac.drv/cocoa_app.m
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -1071,8 +1071,62 @@
+         if (options != [NSApp presentationOptions])
+             [NSApp setPresentationOptions:options];
+ 
++        /* A captured, hidden cursor still reaches the screen corners inside
++         * the confinement rect and fires macOS hot corners. Keep it 4 points
++         * away from the edges while the foreground fullscreen game hides it;
++         * restore the requested rect otherwise. */
++        BOOL inset = [NSApp isActive] && clientWantsCursorHidden && [[self frontWineWindow] isFullscreen];
++        if (inset != cursorClipInset)
++        {
++            cursorClipInset = inset;
++            if (self.clippingCursor)
++                [self applyCursorClipRect:requestedCursorClipRect];
++        }
+     }
+ 
++    - (int) applyCursorClipRect:(CGRect)r
++    {
++        BOOL clipping = FALSE;
++        CGRect rect = r;
++
++        requestedCursorClipRect = r;
++        if (!CGRectIsInfinite(rect))
++            rect = cgrect_mac_from_win(rect);
++
++        if (!CGRectIsInfinite(rect))
++        {
++            NSRect nsrect = NSRectFromCGRect(rect);
++            NSScreen* screen;
++
++            /* Convert the rectangle from top-down coords to bottom-up. */
++            [self flipRect:&nsrect];
++
++            if (cursorClipInset)
++            {
++                NSRect frame = [[[self frontWineWindow] screen] frame];
++                NSRect inner = NSIntersectionRect(nsrect, NSInsetRect(frame, 4, 4));
++                if (NSWidth(frame) > 8 && NSHeight(frame) > 8 && !NSIsEmptyRect(inner))
++                    nsrect = inner;
++            }
++
++            for (screen in [NSScreen screens])
++            {
++                if (!NSContainsRect(nsrect, [screen frame]))
++                {
++                    clipping = TRUE;
++                    break;
++                }
++            }
++
++            [self flipRect:&nsrect];
++            rect = NSRectToCGRect(nsrect);
++        }
++
++        if (clipping)
++            return [self startClippingCursor:rect];
++        return [self stopClippingCursor];
++    }
++
+     - (void) updateCursor:(BOOL)force
+     {
+         if (force || lastTargetWindow)
+@@ -2870,36 +2924,7 @@
+     __block int ret;
+ 
+     OnMainThread(^{
+-        WineApplicationController* controller = [WineApplicationController sharedController];
+-        BOOL clipping = FALSE;
+-        CGRect rect = r;
+-
+-        if (!CGRectIsInfinite(rect))
+-            rect = cgrect_mac_from_win(rect);
+-
+-        if (!CGRectIsInfinite(rect))
+-        {
+-            NSRect nsrect = NSRectFromCGRect(rect);
+-            NSScreen* screen;
+-
+-            /* Convert the rectangle from top-down coords to bottom-up. */
+-            [controller flipRect:&nsrect];
+-
+-            clipping = FALSE;
+-            for (screen in [NSScreen screens])
+-            {
+-                if (!NSContainsRect(nsrect, [screen frame]))
+-                {
+-                    clipping = TRUE;
+-                    break;
+-                }
+-            }
+-        }
+-
+-        if (clipping)
+-            ret = [controller startClippingCursor:rect];
+-        else
+-            ret = [controller stopClippingCursor];
++        ret = [[WineApplicationController sharedController] applyCursorClipRect:r];
+     });
+ 
+     return ret;
