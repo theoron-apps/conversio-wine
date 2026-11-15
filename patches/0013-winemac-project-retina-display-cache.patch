@@ -7,7 +7,7 @@ index 9a302da..95886e3 100644
 @@ -1189,6 +1189,11 @@ static void loaderdrv_UpdateClipboard(void)
      load_driver()->pUpdateClipboard();
  }
- 
+
 +static BOOL nulldrv_GetDisplayModeView( const char *name, struct gdi_display_mode_view *view )
 +{
 +    return FALSE;
@@ -22,7 +22,7 @@ index 9a302da..95886e3 100644
      loaderdrv_GetCurrentProcessExplicitAppUserModelID,
 +    nulldrv_GetDisplayModeView,
  };
- 
+
  const struct user_driver_funcs *user_driver = &lazy_load_driver;
 @@ -1401,6 +1407,7 @@ void __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT version
      SET_USER_FUNC(UpdateClipboard);
@@ -32,22 +32,197 @@ index 9a302da..95886e3 100644
      SET_USER_FUNC(CreateDesktop);
      SET_USER_FUNC(CreateWindow);
      SET_USER_FUNC(DesktopWindowProc);
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 5736d56..f882b73 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -712,6 +712,7 @@ BOOL WINAPI NtUserSetCursorPos( INT x, INT y )
+     INT prev_x, prev_y, new_x, new_y;
+
+     rect = map_rect_virt_to_raw( rect, get_thread_dpi() );
++    rect = map_retina_desktop_rect( rect, FALSE );
+     SERVER_START_REQ( set_cursor )
+     {
+         req->flags = SET_CURSOR_POS;
+@@ -726,7 +727,12 @@ BOOL WINAPI NtUserSetCursorPos( INT x, INT y )
+         }
+     }
+     SERVER_END_REQ;
+-    if (ret && (prev_x != new_x || prev_y != new_y)) user_driver->pSetCursorPos( new_x, new_y );
++    if (ret && (prev_x != new_x || prev_y != new_y))
++    {
++        SetRect( &rect, new_x, new_y, new_x, new_y );
++        rect = map_retina_desktop_rect( rect, TRUE );
++        user_driver->pSetCursorPos( rect.left, rect.top );
++    }
+     return ret;
+ }
+
+@@ -741,6 +747,7 @@ BOOL WINAPI NtUserGetCursorPos( POINT *pt )
+     DWORD last_change = 0;
+     NTSTATUS status;
+     RECT rect;
++    BOOL from_server;
+
+     if (!pt) return FALSE;
+
+@@ -753,10 +760,12 @@ BOOL WINAPI NtUserGetCursorPos( POINT *pt )
+     if (status) return FALSE;
+
+     /* query new position from graphics driver if we haven't updated recently */
+-    if (NtGetTickCount() - last_change > 100) ret = user_driver->pGetCursorPos( pt );
++    from_server = NtGetTickCount() - last_change <= 100;
++    if (!from_server) ret = user_driver->pGetCursorPos( pt );
+     if (!ret) return FALSE;
+
+     SetRect( &rect, pt->x, pt->y, pt->x, pt->y );
++    if (from_server) rect = map_retina_desktop_rect( rect, TRUE );
+     rect = map_rect_raw_to_virt( rect, get_thread_dpi() );
+     *pt = *(POINT *)&rect.left;
+     return ret;
+@@ -1596,8 +1605,11 @@ int WINAPI NtUserGetMouseMovePointsEx( UINT size, MOUSEMOVEPOINT *ptin, MOUSEMOV
+
+     for (i = 0; i < ARRAY_SIZE( positions ); i++)
+     {
++        RECT point;
+         pos = &positions[i];
+-        if (ptin->x == pos->x && ptin->y == pos->y && (!ptin->time || ptin->time == pos->time))
++        SetRect( &point, pos->x, pos->y, pos->x, pos->y );
++        point = map_retina_desktop_rect( point, TRUE );
++        if (ptin->x == point.left && ptin->y == point.top && (!ptin->time || ptin->time == pos->time))
+             break;
+     }
+
+@@ -1609,9 +1621,12 @@ int WINAPI NtUserGetMouseMovePointsEx( UINT size, MOUSEMOVEPOINT *ptin, MOUSEMOV
+
+     for (copied = 0; copied < count && i < ARRAY_SIZE( positions ); copied++, i++)
+     {
++        RECT point;
+         pos = &positions[i];
+-        ptout[copied].x = pos->x;
+-        ptout[copied].y = pos->y;
++        SetRect( &point, pos->x, pos->y, pos->x, pos->y );
++        point = map_retina_desktop_rect( point, TRUE );
++        ptout[copied].x = point.left;
++        ptout[copied].y = point.top;
+         ptout[copied].time = pos->time;
+         ptout[copied].dwExtraInfo = pos->info;
+     }
+@@ -2709,6 +2724,7 @@ BOOL clip_fullscreen_window( HWND hwnd, BOOL reset )
+
+     TRACE( "win %p clipping fullscreen\n", hwnd );
+
++    monitor_rect = map_retina_desktop_rect( monitor_rect, FALSE );
+     SERVER_START_REQ( set_cursor )
+     {
+         req->flags = SET_CURSOR_CLIP | SET_CURSOR_FSCLIP;
+@@ -2743,7 +2759,11 @@ static BOOL get_clip_cursor( RECT *rect, UINT dpi, MONITOR_DPI_TYPE type )
+     while ((status = get_shared_desktop( &lock, &desktop_shm )) == STATUS_PENDING)
+         *rect = wine_server_get_rect( desktop_shm->cursor.clip );
+
+-    if (!status && type == MDT_EFFECTIVE_DPI) *rect = map_rect_raw_to_virt( *rect, dpi );
++    if (!status)
++    {
++        *rect = map_retina_desktop_rect( *rect, TRUE );
++        if (type == MDT_EFFECTIVE_DPI) *rect = map_rect_raw_to_virt( *rect, dpi );
++    }
+     return !status;
+ }
+
+@@ -2812,6 +2832,7 @@ BOOL WINAPI NtUserClipCursor( const RECT *rect )
+         }
+         if (rect->left > rect->right || rect->top > rect->bottom) return FALSE;
+         new_rect = map_rect_virt_to_raw( *rect, dpi );
++        new_rect = map_retina_desktop_rect( new_rect, FALSE );
+         rect = &new_rect;
+     }
+
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index caddb73..59406e0 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -2870,6 +2870,7 @@ static BOOL process_hardware_message( MSG *msg, UINT hw_id, const struct hardwar
+
+     /* hardware messages are always in raw physical coords */
+     context = set_thread_dpi_awareness_context( NTUSER_DPI_PER_MONITOR_AWARE );
++    rect = map_retina_desktop_rect( rect, TRUE );
+     rect = map_rect_raw_to_virt( rect, get_thread_dpi() );
+     msg->pt.x = rect.left;
+     msg->pt.y = rect.top;
+@@ -3106,6 +3107,7 @@ static int peek_message( MSG *msg, const struct peek_message_filter *filter )
+                 RECT rect = {info.msg.pt.x, info.msg.pt.y, info.msg.pt.x, info.msg.pt.y};
+                 MSLLHOOKSTRUCT hook;
+
++                rect = map_retina_desktop_rect( rect, TRUE );
+                 rect = map_rect_raw_to_virt( rect, 0 );
+                 info.msg.pt.x = rect.left;
+                 info.msg.pt.y = rect.top;
+@@ -3906,6 +3908,7 @@ NTSTATUS send_hardware_message( HWND hwnd, UINT flags, const INPUT *input, LPARA
+     struct send_message_info info;
+     int prev_x, prev_y, new_x, new_y;
+     NTSTATUS ret;
++    RECT rect;
+     BOOL wait;
+
+     info.type     = MSG_HARDWARE;
+@@ -3926,8 +3929,10 @@ NTSTATUS send_hardware_message( HWND hwnd, UINT flags, const INPUT *input, LPARA
+         switch (input->type)
+         {
+         case INPUT_MOUSE:
+-            req->input.mouse.x     = input->mi.dx;
+-            req->input.mouse.y     = input->mi.dy;
++            SetRect( &rect, input->mi.dx, input->mi.dy, input->mi.dx, input->mi.dy );
++            rect = map_retina_desktop_rect( rect, FALSE );
++            req->input.mouse.x     = rect.left;
++            req->input.mouse.y     = rect.top;
+             req->input.mouse.data  = input->mi.mouseData;
+             req->input.mouse.flags = input->mi.dwFlags;
+             req->input.mouse.time  = input->mi.time;
+@@ -3986,7 +3991,11 @@ NTSTATUS send_hardware_message( HWND hwnd, UINT flags, const INPUT *input, LPARA
+     SERVER_END_REQ;
+
+     if (!ret && (flags & SEND_HWMSG_INJECTED) && (prev_x != new_x || prev_y != new_y))
+-        user_driver->pSetCursorPos( new_x, new_y );
++    {
++        SetRect( &rect, new_x, new_y, new_x, new_y );
++        rect = map_retina_desktop_rect( rect, TRUE );
++        user_driver->pSetCursorPos( rect.left, rect.top );
++    }
+
+     if (wait)
+     {
 diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
-index 8798fbf..c4cb971 100644
+index 8798fbf..499f1e1 100644
 --- a/dlls/win32u/sysparams.c
 +++ b/dlls/win32u/sysparams.c
-@@ -127,6 +127,7 @@ struct source
+@@ -116,6 +116,7 @@ struct source
+     LONG refcount;
+     struct list entry;
+     char path[MAX_PATH];
++    char driver_name[MAX_PATH];
+     unsigned int id;
+     struct gpu *gpu;
+     HKEY key;
+@@ -127,6 +128,7 @@ struct source
      DEVMODEW current;
      DEVMODEW physical;
      DEVMODEW *modes;
 +    struct gdi_display_mode_view view;
  };
- 
+
  #define MONITOR_INFO_HAS_MONITOR_ID 0x00000001
-@@ -514,6 +515,41 @@ static BOOL read_source_mode( HKEY hkey, UINT index, DEVMODEW *mode )
+@@ -165,6 +167,7 @@ static struct list monitors = LIST_INIT(monitors);
+ static INT64 last_query_display_time;
+ static UINT64 monitor_update_serial;
+ static pthread_mutex_t display_lock = PTHREAD_MUTEX_INITIALIZER;
++static LONG retina_desktop_scale;
+
+ static BOOL emulate_modeset;
+ BOOL decorated_mode = TRUE;
+@@ -514,6 +517,53 @@ static BOOL read_source_mode( HKEY hkey, UINT index, DEVMODEW *mode )
      return TRUE;
  }
- 
+
 +/* Keep mode writes reversible in the shared registry. Non-original modes
 + * already use native dimensions, and a detached source must stay detached.
 + */
@@ -55,6 +230,18 @@ index 8798fbf..c4cb971 100644
 +{
 +    if (scale > 0) return min( (INT64)INT_MAX, max( (INT64)INT_MIN, (INT64)pos * 2 ) );
 +    return scale < 0 ? pos / 2 : pos;
++}
++
++/* The macOS driver scales around the main display's origin. Wine's shared
++ * cursor and input messages continue to use the bottle's raw coordinates. */
++RECT map_retina_desktop_rect( RECT rect, BOOL from_server )
++{
++    LONG scale = ReadNoFence( &retina_desktop_scale );
++    if (!scale) return rect;
++    if (!from_server) scale = -scale;
++    SetRect( &rect, scale_display_coord( rect.left, scale ), scale_display_coord( rect.top, scale ),
++             scale_display_coord( rect.right, scale ), scale_display_coord( rect.bottom, scale ) );
++    return rect;
 +}
 +
 +static void map_source_mode( const struct source *source, DEVMODEW *mode, BOOL to_local )
@@ -86,7 +273,7 @@ index 8798fbf..c4cb971 100644
  static BOOL source_get_registry_settings( const struct source *source, DEVMODEW *mode )
  {
      BOOL ret = FALSE;
-@@ -525,7 +561,7 @@ static BOOL source_get_registry_settings( const struct source *source, DEVMODEW
+@@ -525,7 +575,7 @@ static BOOL source_get_registry_settings( const struct source *source, DEVMODEW
      if (!(hkey = reg_open_ascii_key( config_key, source->path ))) ret = FALSE;
      else
      {
@@ -94,8 +281,8 @@ index 8798fbf..c4cb971 100644
 +        if ((ret = read_source_mode( hkey, ENUM_REGISTRY_SETTINGS, mode ))) map_source_mode( source, mode, TRUE );
          NtClose( hkey );
      }
- 
-@@ -544,7 +580,9 @@ static BOOL source_set_registry_settings( const struct source *source, const DEV
+
+@@ -544,7 +594,9 @@ static BOOL source_set_registry_settings( const struct source *source, const DEV
      if (!(hkey = reg_open_ascii_key( config_key, source->path ))) ret = FALSE;
      else
      {
@@ -105,8 +292,8 @@ index 8798fbf..c4cb971 100644
 +        ret = write_source_mode( hkey, ENUM_REGISTRY_SETTINGS, &shared );
          NtClose( hkey );
      }
- 
-@@ -570,7 +608,9 @@ static BOOL source_set_current_settings( const struct source *source, const DEVM
+
+@@ -570,7 +622,9 @@ static BOOL source_set_current_settings( const struct source *source, const DEVM
      if (!(hkey = reg_open_ascii_key( config_key, source->path ))) ret = FALSE;
      else
      {
@@ -117,10 +304,45 @@ index 8798fbf..c4cb971 100644
          if (ret) set_reg_value( hkey, depthW, REG_DWORD, &mode->dmBitsPerPel, sizeof(mode->dmBitsPerPel) );
          NtClose( hkey );
      }
-@@ -2514,6 +2554,41 @@ static struct monitor *find_monitor_from_path( const char *path )
+@@ -675,6 +729,25 @@ static BOOL read_source_from_registry( unsigned int index, struct source *source
+     for (i = 0; i < value->DataLength / sizeof(WCHAR) - size; i++) source->path[i] = value_str[size + i];
+     if (!(hkey = reg_open_ascii_key( config_key, source->path ))) return FALSE;
+
++    /* DeviceMap points to an indexed registry link such as Video\{guid}\0000.
++     * The opened key is its target, Sources\<driver name>. Keep the logical
++     * path for Windows callers and use the target name for the driver. */
++    {
++        KEY_NAME_INFORMATION *info = (void *)buffer;
++        const WCHAR *name;
++
++        if (!NtQueryKey( hkey, KeyNameInformation, info, sizeof(buffer) - sizeof(WCHAR), &size ))
++        {
++            info->Name[info->NameLength / sizeof(WCHAR)] = 0;
++            if ((name = wcsrchr( info->Name, '\\' )))
++            {
++                name++;
++                for (i = 0; i < sizeof(source->driver_name) - 1 && name[i]; i++)
++                    source->driver_name[i] = name[i];
++            }
++        }
++    }
++
+     /* StateFlags */
+     if (query_reg_ascii_value( hkey, "StateFlags", value, sizeof(buffer) ) && value->Type == REG_DWORD)
+         source->state_flags = *(const DWORD *)value->Data;
+@@ -816,6 +889,8 @@ static void clear_display_devices(void)
+     struct monitor *monitor;
+     struct gpu *gpu;
+
++    InterlockedExchange( &retina_desktop_scale, 0 );
++
+     if (list_head( &monitors ) == &virtual_monitor.entry)
+     {
+         list_init( &monitors );
+@@ -2514,6 +2589,44 @@ static struct monitor *find_monitor_from_path( const char *path )
      return NULL;
  }
- 
+
 +/* Called only with freshly read shared state. Never publish the adjusted
 + * rectangles to either the registry or the winstation monitor table.
 + */
@@ -128,13 +350,13 @@ index 8798fbf..c4cb971 100644
 +{
 +    struct source *source;
 +    struct monitor *monitor;
++    LONG desktop_scale = 0;
 +
 +    if (emulate_modeset || is_virtual_desktop()) return;
 +    LIST_FOR_EACH_ENTRY( source, &sources, struct source, entry )
 +    {
-+        const char *name = strrchr( source->path, '\\' );
 +        struct gdi_display_mode_view view;
-+        if (!name || !user_driver->pGetDisplayModeView( name + 1, &view )) continue;
++        if (!source->driver_name[0] || !user_driver->pGetDisplayModeView( source->driver_name, &view )) continue;
 +        free( source->modes );
 +        source->modes = view.modes;
 +        view.modes = NULL;
@@ -143,7 +365,9 @@ index 8798fbf..c4cb971 100644
 +        qsort( source->modes, source->mode_count, sizeof(*source->modes), mode_compare );
 +        map_source_mode( source, &source->current, TRUE );
 +        map_source_mode( source, &source->physical, TRUE );
-+        TRACE( "projected source %u to %s\n", source->id, debugstr_devmodew( &source->current ) );
++        if (source->state_flags & DISPLAY_DEVICE_PRIMARY_DEVICE) desktop_scale = view.scale;
++        TRACE( "projected source %u (%s) to %s\n", source->id,
++               debugstr_a( source->driver_name ), debugstr_devmodew( &source->current ) );
 +    }
 +
 +    LIST_FOR_EACH_ENTRY( monitor, &monitors, struct monitor, entry )
@@ -154,21 +378,22 @@ index 8798fbf..c4cb971 100644
 +        monitor->rc_work.right = scale_display_coord( monitor->rc_work.right, scale );
 +        monitor->rc_work.bottom = scale_display_coord( monitor->rc_work.bottom, scale );
 +    }
++    InterlockedExchange( &retina_desktop_scale, desktop_scale );
 +}
 +
  static BOOL update_display_cache_from_registry( UINT64 serial )
  {
      char path[MAX_PATH];
-@@ -2601,6 +2676,7 @@ static BOOL update_display_cache_from_registry( UINT64 serial )
- 
+@@ -2601,6 +2714,7 @@ static BOOL update_display_cache_from_registry( UINT64 serial )
+
      set_winstation_monitors( FALSE );
      release_display_device_init_mutex( mutex );
 +    if (ret) project_display_cache();
      return ret;
  }
- 
-@@ -4292,6 +4368,10 @@ static BOOL get_primary_source_mode( DEVMODEW *mode )
- 
+
+@@ -4292,6 +4406,10 @@ static BOOL get_primary_source_mode( DEVMODEW *mode )
+
      if (!(primary = find_source( NULL ))) return FALSE;
      ret = source_get_current_settings( primary, mode );
 +    /* WM_DISPLAYCHANGE is sent across process boundaries. Its payload stays
@@ -176,8 +401,20 @@ index 8798fbf..c4cb971 100644
 +     */
 +    if (ret) map_source_mode( primary, mode, FALSE );
      source_release( primary );
- 
+
      return ret;
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index cbbcef0..27aa7e0 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -179,6 +179,7 @@ extern RECT map_dpi_rect( RECT rect, UINT dpi_from, UINT dpi_to );
+ extern HRGN map_dpi_region( HRGN region, UINT dpi_from, UINT dpi_to );
+ extern struct window_rects map_dpi_window_rects( struct window_rects rects, UINT dpi_from, UINT dpi_to );
+ extern RECT map_rect_raw_to_virt( RECT rect, UINT dpi_to );
++extern RECT map_retina_desktop_rect( RECT rect, BOOL from_server );
+ extern RECT map_rect_virt_to_raw( RECT rect, UINT dpi_from );
+ extern struct window_rects map_window_rects_virt_to_raw( struct window_rects rects, UINT dpi_from );
+ extern POINT point_phys_to_win_dpi( HWND hwnd, POINT pt );
 diff --git a/dlls/winemac.drv/cocoa_display.m b/dlls/winemac.drv/cocoa_display.m
 index 6f845c5..8f16057 100644
 --- a/dlls/winemac.drv/cocoa_display.m
@@ -193,14 +430,14 @@ index 6f845c5..8f16057 100644
  {
 @@ -982,8 +982,9 @@ int macdrv_get_monitors(CGDirectDisplayID adapter_id, struct macdrv_monitor** ne
                      primary_index = monitor_count;
- 
+
                  monitors[monitor_count].id = display_ids[i];
 -                monitors[monitor_count].rc_monitor = cgrect_win_from_mac(convert_display_rect(screen.frame, primary_frame));
 -                monitors[monitor_count].rc_work = cgrect_win_from_mac(convert_display_rect(screen.visibleFrame, primary_frame));
 +                CGAffineTransform scale = CGAffineTransformMakeScale(retina ? 2 : 1, retina ? 2 : 1);
 +                monitors[monitor_count].rc_monitor = CGRectApplyAffineTransform(convert_display_rect(screen.frame, primary_frame), scale);
 +                monitors[monitor_count].rc_work = CGRectApplyAffineTransform(convert_display_rect(screen.visibleFrame, primary_frame), scale);
- 
+
                  vendor_number = CGDisplayVendorNumber(monitors[monitor_count].id);
                  model_number = CGDisplayModelNumber(monitors[monitor_count].id);
 diff --git a/dlls/winemac.drv/display.c b/dlls/winemac.drv/display.c
@@ -210,16 +447,16 @@ index 2663eb8..0e27528 100644
 @@ -275,7 +275,7 @@ static void init_original_display_mode(void)
      if (disposition != REG_CREATED_NEW_KEY)
          goto done;
- 
+
 -    if (macdrv_get_monitors(kCGNullDirectDisplay, &monitors, &num_monitors))
 +    if (macdrv_get_monitors(kCGNullDirectDisplay, false, &monitors, &num_monitors))
          goto fail;
- 
+
      for (i = 0; i < num_monitors; i++)
 @@ -444,7 +444,7 @@ static int get_default_bpp(void)
  }
- 
- 
+
+
 -static CFDictionaryRef create_mode_dict(CGDisplayModeRef display_mode, BOOL is_original)
 +static CFDictionaryRef create_mode_dict(CGDisplayModeRef display_mode, BOOL is_original, BOOL retina)
  {
@@ -228,7 +465,7 @@ index 2663eb8..0e27528 100644
 @@ -454,7 +454,7 @@ static CFDictionaryRef create_mode_dict(CGDisplayModeRef display_mode, BOOL is_o
      CFStringRef pixel_encoding = CGDisplayModeCopyPixelEncoding(display_mode);
      CFNumberRef cf_io_flags, cf_width, cf_height, cf_refresh;
- 
+
 -    if (retina_enabled && is_original)
 +    if (retina && is_original)
      {
@@ -250,12 +487,12 @@ index 2663eb8..0e27528 100644
 -        CFDictionaryRef key = create_mode_dict(new_mode, new_is_original);
 +        CFDictionaryRef key = create_mode_dict(new_mode, new_is_original, retina);
          CGDisplayModeRef old_mode = (CGDisplayModeRef)CFDictionaryGetValue(modes_by_size, key);
- 
+
          if (mode_is_preferred(new_mode, old_mode, desc, include_unsupported))
 @@ -700,20 +700,22 @@ static CFArrayRef copy_display_modes(CGDirectDisplayID display, BOOL include_uns
  }
- 
- 
+
+
 -void check_retina_status(void)
 +static BOOL main_display_is_original(void)
  {
@@ -268,14 +505,14 @@ index 2663eb8..0e27528 100644
 +    struct display_mode_descriptor *desc = create_original_display_mode_descriptor(display);
 +    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(display);
 +    BOOL original = mode && display_mode_matches_descriptor(mode, desc);
- 
+
 -        CGDisplayModeRelease(mode);
 -        free_display_mode_descriptor(desc);
 +    if (mode) CGDisplayModeRelease(mode);
 +    free_display_mode_descriptor(desc);
 +    return original;
 +}
- 
+
 -        if (new_value != retina_on)
 -            macdrv_set_cocoa_retina_mode(new_value);
 -    }
@@ -284,21 +521,21 @@ index 2663eb8..0e27528 100644
 +    BOOL new_value = retina_enabled && main_display_is_original();
 +    if (new_value != retina_on) macdrv_set_cocoa_retina_mode(new_value);
  }
- 
+
  static BOOL is_detached_mode(const DEVMODEW *mode)
 @@ -796,7 +798,7 @@ LONG macdrv_ChangeDisplaySettings(LPDEVMODEW displays, LPCWSTR primary_name, HWN
      init_original_display_mode();
- 
+
      /* TODO: support displays other than the main one */
 -    display_modes = copy_display_modes(CGMainDisplayID(), FALSE);
 +    display_modes = copy_display_modes(CGMainDisplayID(), FALSE, retina_enabled);
      if (!display_modes)
          return DISP_CHANGE_FAILED;
- 
+
 @@ -847,7 +849,7 @@ LONG macdrv_ChangeDisplaySettings(LPDEVMODEW displays, LPCWSTR primary_name, HWN
  }
- 
- 
+
+
 -static DEVMODEW *display_get_modes(CGDirectDisplayID display_id, int *modes_count)
 +static DEVMODEW *display_get_modes(CGDirectDisplayID display_id, int *modes_count, BOOL retina)
  {
@@ -307,25 +544,25 @@ index 2663eb8..0e27528 100644
 @@ -855,7 +857,7 @@ static DEVMODEW *display_get_modes(CGDirectDisplayID display_id, int *modes_coun
      DEVMODEW *devmodes;
      CFArrayRef modes;
- 
+
 -    modes = copy_display_modes(display_id, TRUE);
 +    modes = copy_display_modes(display_id, TRUE, retina);
      if (!modes)
          return NULL;
- 
+
 @@ -870,7 +872,7 @@ static DEVMODEW *display_get_modes(CGDirectDisplayID display_id, int *modes_coun
              modes_has_16bpp = TRUE;
      }
- 
+
 -    if (!(devmodes = calloc(count * 3, sizeof(DEVMODEW))))
 +    if (!(devmodes = calloc(count * 3 + 1, sizeof(DEVMODEW))))
      {
          CFRelease(modes);
          return NULL;
 @@ -886,7 +888,7 @@ static DEVMODEW *display_get_modes(CGDirectDisplayID display_id, int *modes_coun
- 
+
          display_mode_to_devmode_fields(display_id, mode, devmodes + i);
- 
+
 -        if (retina_enabled && display_mode_matches_descriptor(mode, desc))
 +        if (retina && display_mode_matches_descriptor(mode, desc))
          {
@@ -334,7 +571,7 @@ index 2663eb8..0e27528 100644
 @@ -917,7 +919,46 @@ static DEVMODEW *display_get_modes(CGDirectDisplayID display_id, int *modes_coun
      return devmodes;
  }
- 
+
 -static void display_get_current_mode(struct macdrv_monitor *monitor, DEVMODEW *devmode)
 +/* Re-enumerate the native modes with the process policy. The shared list
 + * can't simply be multiplied: only the original mode gets a Retina alias.
@@ -381,7 +618,7 @@ index 2663eb8..0e27528 100644
      CGDirectDisplayID display_id;
 @@ -930,7 +971,7 @@ static void display_get_current_mode(struct macdrv_monitor *monitor, DEVMODEW *d
      devmode->dmFields |= DM_POSITION;
- 
+
      display_mode_to_devmode_fields(display_id, display_mode, devmode);
 -    if (retina_enabled)
 +    if (retina)
@@ -391,7 +628,7 @@ index 2663eb8..0e27528 100644
 @@ -1089,6 +1130,8 @@ UINT macdrv_UpdateDisplayDevices(const struct gdi_device_manager *device_manager
      INT gpu_count, adapter_count, monitor_count, mode_count;
      DEVMODEW *modes;
- 
+
 +    BOOL bottle_retina_on = bottle_retina_enabled && main_display_is_original();
 +
      /* Initialize GPUs */
@@ -400,20 +637,20 @@ index 2663eb8..0e27528 100644
 @@ -1121,7 +1164,7 @@ UINT macdrv_UpdateDisplayDevices(const struct gdi_device_manager *device_manager
              snprintf( buffer, sizeof(buffer), "%04x", adapter->id );
              device_manager->add_source( buffer, adapter->state_flags, dpi, param );
- 
+
 -            if (macdrv_get_monitors(adapter->id, &monitors, &monitor_count)) break;
 +            if (macdrv_get_monitors(adapter->id, bottle_retina_on, &monitors, &monitor_count)) break;
              TRACE("adapter: %#x, monitor count: %d\n", adapter->id, monitor_count);
- 
+
              /* Initialize monitors */
 @@ -1139,10 +1182,10 @@ UINT macdrv_UpdateDisplayDevices(const struct gdi_device_manager *device_manager
- 
+
                  /* Get the current mode */
                  if (monitor->id == adapter->id)
 -                    display_get_current_mode(monitor, &current_mode);
 +                    display_get_current_mode(monitor, &current_mode, bottle_retina_enabled);
              }
- 
+
 -            if (!(modes = display_get_modes(adapter->id, &mode_count))) break;
 +            if (!(modes = display_get_modes(adapter->id, &mode_count, bottle_retina_enabled))) break;
              device_manager->add_modes( &current_mode, mode_count, modes, param );
@@ -437,12 +674,12 @@ index 5735ff7..1291f96 100644
 +++ b/dlls/winemac.drv/macdrv.h
 @@ -278,6 +278,8 @@ extern CGImageRef create_cgimage_from_icon_bitmaps(HDC hdc, HANDLE icon, HBITMAP
  extern void macdrv_status_item_mouse_move(const macdrv_event *event);
- 
+
  extern void check_retina_status(void);
 +extern bool bottle_retina_enabled;
 +extern BOOL macdrv_GetDisplayModeView(const char *, struct gdi_display_mode_view *);
  extern void init_user_driver(void);
- 
+
  extern struct format_entry *get_format_entries(CFTypeRef pasteboard, UINT *entries_size);
 diff --git a/dlls/winemac.drv/macdrv_cocoa.h b/dlls/winemac.drv/macdrv_cocoa.h
 index f2284ca..02d1915 100644
@@ -456,7 +693,7 @@ index f2284ca..02d1915 100644
 +extern int macdrv_get_monitors(CGDirectDisplayID adapter_id, bool retina, struct macdrv_monitor** monitors, int* count);
  extern void macdrv_free_monitors(struct macdrv_monitor* monitors, int monitor_count);
  extern void macdrv_hide_hdr(void);
- 
+
 diff --git a/dlls/winemac.drv/macdrv_main.c b/dlls/winemac.drv/macdrv_main.c
 index ccaf28f..2882c07 100644
 --- a/dlls/winemac.drv/macdrv_main.c
@@ -472,7 +709,7 @@ index ccaf28f..2882c07 100644
 @@ -412,8 +413,11 @@ static void setup_options(void)
      if (!get_config_key(hkey, appkey, "EnableHDR", buffer, sizeof(buffer)))
          enable_hdr = IS_OPTION_TRUE(buffer[0]);
- 
+
 -    /* Conversio: each game chooses its backing resolution. Keep the bottle DPI
 -       unchanged; Steam and launchers need not use the game's Retina setting. */
 +    /* Publish display settings in the bottle coordinate space. The app choice
@@ -482,24 +719,24 @@ index ccaf28f..2882c07 100644
 +    retina_enabled = bottle_retina_enabled;
      if (!get_config_key(hkey, appkey, "RetinaMode", buffer, sizeof(buffer)))
          retina_enabled = IS_OPTION_TRUE(buffer[0]);
- 
+
 diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
 index 727f998..3595607 100644
 --- a/include/wine/gdi_driver.h
 +++ b/include/wine/gdi_driver.h
 @@ -218,7 +218,7 @@ struct gdi_dc_funcs
  };
- 
+
  /* increment this when you change the DC function table */
 -#define WINE_GDI_DRIVER_VERSION 108
 +#define WINE_GDI_DRIVER_VERSION 109
- 
+
  #define GDI_PRIORITY_NULL_DRV        0  /* null driver */
  #define GDI_PRIORITY_FONT_DRV      100  /* any font driver */
 @@ -361,6 +361,17 @@ struct gdi_device_manager
  struct vulkan_driver_funcs;
  struct opengl_driver_funcs;
- 
+
 +/* Optional driver view of an existing source, with the same registry identity.
 + * Modes are owned by win32u on success. A scale of +/-1 doubles/halves positions.
 + */
@@ -520,5 +757,5 @@ index 727f998..3595607 100644
      NTSTATUS (*pGetCurrentProcessExplicitAppUserModelID)(LPWSTR,INT);
 +    BOOL    (*pGetDisplayModeView)(const char *,struct gdi_display_mode_view *);
  };
- 
+
  W32KAPI void __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT version );

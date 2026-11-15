@@ -9,7 +9,7 @@ on:
         type: string
       revision:
         description: Our build number for this CrossOver version (bump when patches change)
-        default: "14"
+        default: "15"
         type: string
       cx_sha256:
         description: SHA-256 of the source tarball, only for a version not pinned in scripts/build.sh
@@ -42,7 +42,7 @@ jobs:
     timeout-minutes: 330
     env:
       CX_VER: ${{ inputs.cx_version || '26.3.0' }}
-      REVISION: ${{ inputs.revision || '14' }}
+      REVISION: ${{ inputs.revision || '15' }}
       CX_SHA256: ${{ inputs.cx_sha256 }}
       CC: ccache clang
       CXX: ccache clang++
@@ -186,7 +186,7 @@ jobs:
         run: arch -x86_64 /usr/bin/true
       - uses: actions/download-artifact@v4
         with:
-          name: conversio-wine-cx${{ inputs.cx_version || '26.3.0' }}-${{ inputs.revision || '14' }}
+          name: conversio-wine-cx${{ inputs.cx_version || '26.3.0' }}-${{ inputs.revision || '15' }}
           path: dist
       - uses: actions/download-artifact@v4
         with:
