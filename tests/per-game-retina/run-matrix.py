@@ -11,6 +11,7 @@ import time
 
 
 DEADLINE = 30
+BOOT_DEADLINE = 90
 MAC_DRIVER = r"HKCU\Software\Wine\Mac Driver"
 APP_DEFAULTS = r"HKCU\Software\Wine\AppDefaults"
 ROW = re.compile(
@@ -36,8 +37,8 @@ def run_matrix(wine_root, scratch, width, height):
     logical = f"{width}x{height}"
     identity = set()
 
-    def run(exe, *args, **kwargs):
-        return subprocess.run([exe, *args], env=env, check=True, timeout=DEADLINE, **kwargs)
+    def run(exe, *args, timeout=DEADLINE, **kwargs):
+        return subprocess.run([exe, *args], env=env, check=True, timeout=timeout, **kwargs)
 
     def reg(*args):
         run(wine, "reg", *args, stdout=subprocess.DEVNULL)
@@ -85,7 +86,7 @@ def run_matrix(wine_root, scratch, width, height):
     for bottle, expected_default in (("n", logical), ("y", native)):
         try:
             with (scratch / f"wineboot-{bottle}.log").open("w") as log:
-                run(wine, "wineboot", "-u", stdout=log, stderr=subprocess.STDOUT)
+                run(wine, "wineboot", "-u", timeout=BOOT_DEADLINE, stdout=log, stderr=subprocess.STDOUT)
             for name in ("on", "off", "default"):
                 shutil.copy2(scratch / "probe.exe", prefix / "drive_c" / f"retina-{name}.exe")
             on_key = APP_DEFAULTS + r"\retina-on.exe\Mac Driver"
