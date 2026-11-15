@@ -1,0 +1,524 @@
+Conversio: project the bottle display cache into the current macOS process Retina view.
+
+diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
+index 9a302da..95886e3 100644
+--- a/dlls/win32u/driver.c
++++ b/dlls/win32u/driver.c
+@@ -1189,6 +1189,11 @@ static void loaderdrv_UpdateClipboard(void)
+     load_driver()->pUpdateClipboard();
+ }
+ 
++static BOOL nulldrv_GetDisplayModeView( const char *name, struct gdi_display_mode_view *view )
++{
++    return FALSE;
++}
++
+ static UINT loaderdrv_UpdateDisplayDevices( const struct gdi_device_manager *manager, void *param )
+ {
+     return load_driver()->pUpdateDisplayDevices( manager, param );
+@@ -1340,6 +1345,7 @@ static const struct user_driver_funcs lazy_load_driver =
+     /* CW Hack 22310 */
+     loaderdrv_SetCurrentProcessExplicitAppUserModelID,
+     loaderdrv_GetCurrentProcessExplicitAppUserModelID,
++    nulldrv_GetDisplayModeView,
+ };
+ 
+ const struct user_driver_funcs *user_driver = &lazy_load_driver;
+@@ -1401,6 +1407,7 @@ void __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT version
+     SET_USER_FUNC(UpdateClipboard);
+     SET_USER_FUNC(ChangeDisplaySettings);
+     SET_USER_FUNC(UpdateDisplayDevices);
++    SET_USER_FUNC(GetDisplayModeView);
+     SET_USER_FUNC(CreateDesktop);
+     SET_USER_FUNC(CreateWindow);
+     SET_USER_FUNC(DesktopWindowProc);
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 8798fbf..c4cb971 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -127,6 +127,7 @@ struct source
+     DEVMODEW current;
+     DEVMODEW physical;
+     DEVMODEW *modes;
++    struct gdi_display_mode_view view;
+ };
+ 
+ #define MONITOR_INFO_HAS_MONITOR_ID 0x00000001
+@@ -514,6 +515,41 @@ static BOOL read_source_mode( HKEY hkey, UINT index, DEVMODEW *mode )
+     return TRUE;
+ }
+ 
++/* Keep mode writes reversible in the shared registry. Non-original modes
++ * already use native dimensions, and a detached source must stay detached.
++ */
++static LONG scale_display_coord( LONG pos, int scale )
++{
++    if (scale > 0) return min( (INT64)INT_MAX, max( (INT64)INT_MIN, (INT64)pos * 2 ) );
++    return scale < 0 ? pos / 2 : pos;
++}
++
++static void map_source_mode( const struct source *source, DEVMODEW *mode, BOOL to_local )
++{
++    const DEVMODEW *from = to_local ? &source->view.shared_original : &source->view.local_original;
++    const DEVMODEW *to = to_local ? &source->view.local_original : &source->view.shared_original;
++    int scale = to_local ? source->view.scale : -source->view.scale;
++
++    if (!source->view.mode_count) return;
++
++    if ((mode->dmFields & (DM_PELSWIDTH | DM_PELSHEIGHT)) == (DM_PELSWIDTH | DM_PELSHEIGHT)
++        && mode->dmPelsWidth == from->dmPelsWidth && mode->dmPelsHeight == from->dmPelsHeight
++        && (!(mode->dmFields & DM_DISPLAYFREQUENCY) || mode->dmDisplayFrequency == from->dmDisplayFrequency)
++        && (!(mode->dmFields & DM_DISPLAYORIENTATION) || mode->dmDisplayOrientation == from->dmDisplayOrientation)
++        && (!(mode->dmFields & DM_DISPLAYFIXEDOUTPUT) || mode->dmDisplayFixedOutput == from->dmDisplayFixedOutput)
++        && (!(mode->dmFields & DM_DISPLAYFLAGS) || !((mode->dmDisplayFlags ^ from->dmDisplayFlags) & DM_INTERLACED)))
++    {
++        mode->dmPelsWidth = to->dmPelsWidth;
++        mode->dmPelsHeight = to->dmPelsHeight;
++    }
++
++    if (mode->dmFields & DM_POSITION)
++    {
++        mode->dmPosition.x = scale_display_coord( mode->dmPosition.x, scale );
++        mode->dmPosition.y = scale_display_coord( mode->dmPosition.y, scale );
++    }
++}
++
+ static BOOL source_get_registry_settings( const struct source *source, DEVMODEW *mode )
+ {
+     BOOL ret = FALSE;
+@@ -525,7 +561,7 @@ static BOOL source_get_registry_settings( const struct source *source, DEVMODEW
+     if (!(hkey = reg_open_ascii_key( config_key, source->path ))) ret = FALSE;
+     else
+     {
+-        ret = read_source_mode( hkey, ENUM_REGISTRY_SETTINGS, mode );
++        if ((ret = read_source_mode( hkey, ENUM_REGISTRY_SETTINGS, mode ))) map_source_mode( source, mode, TRUE );
+         NtClose( hkey );
+     }
+ 
+@@ -544,7 +580,9 @@ static BOOL source_set_registry_settings( const struct source *source, const DEV
+     if (!(hkey = reg_open_ascii_key( config_key, source->path ))) ret = FALSE;
+     else
+     {
+-        ret = write_source_mode( hkey, ENUM_REGISTRY_SETTINGS, mode );
++        DEVMODEW shared = *mode;
++        map_source_mode( source, &shared, FALSE );
++        ret = write_source_mode( hkey, ENUM_REGISTRY_SETTINGS, &shared );
+         NtClose( hkey );
+     }
+ 
+@@ -570,7 +608,9 @@ static BOOL source_set_current_settings( const struct source *source, const DEVM
+     if (!(hkey = reg_open_ascii_key( config_key, source->path ))) ret = FALSE;
+     else
+     {
+-        ret = write_source_mode( hkey, ENUM_CURRENT_SETTINGS, mode );
++        DEVMODEW shared = *mode;
++        map_source_mode( source, &shared, FALSE );
++        ret = write_source_mode( hkey, ENUM_CURRENT_SETTINGS, &shared );
+         if (ret) set_reg_value( hkey, depthW, REG_DWORD, &mode->dmBitsPerPel, sizeof(mode->dmBitsPerPel) );
+         NtClose( hkey );
+     }
+@@ -2514,6 +2554,41 @@ static struct monitor *find_monitor_from_path( const char *path )
+     return NULL;
+ }
+ 
++/* Called only with freshly read shared state. Never publish the adjusted
++ * rectangles to either the registry or the winstation monitor table.
++ */
++static void project_display_cache(void)
++{
++    struct source *source;
++    struct monitor *monitor;
++
++    if (emulate_modeset || is_virtual_desktop()) return;
++    LIST_FOR_EACH_ENTRY( source, &sources, struct source, entry )
++    {
++        const char *name = strrchr( source->path, '\\' );
++        struct gdi_display_mode_view view;
++        if (!name || !user_driver->pGetDisplayModeView( name + 1, &view )) continue;
++        free( source->modes );
++        source->modes = view.modes;
++        view.modes = NULL;
++        source->view = view;
++        source->mode_count = view.mode_count;
++        qsort( source->modes, source->mode_count, sizeof(*source->modes), mode_compare );
++        map_source_mode( source, &source->current, TRUE );
++        map_source_mode( source, &source->physical, TRUE );
++        TRACE( "projected source %u to %s\n", source->id, debugstr_devmodew( &source->current ) );
++    }
++
++    LIST_FOR_EACH_ENTRY( monitor, &monitors, struct monitor, entry )
++    {
++        int scale = monitor->source ? monitor->source->view.scale : 0;
++        monitor->rc_work.left = scale_display_coord( monitor->rc_work.left, scale );
++        monitor->rc_work.top = scale_display_coord( monitor->rc_work.top, scale );
++        monitor->rc_work.right = scale_display_coord( monitor->rc_work.right, scale );
++        monitor->rc_work.bottom = scale_display_coord( monitor->rc_work.bottom, scale );
++    }
++}
++
+ static BOOL update_display_cache_from_registry( UINT64 serial )
+ {
+     char path[MAX_PATH];
+@@ -2601,6 +2676,7 @@ static BOOL update_display_cache_from_registry( UINT64 serial )
+ 
+     set_winstation_monitors( FALSE );
+     release_display_device_init_mutex( mutex );
++    if (ret) project_display_cache();
+     return ret;
+ }
+ 
+@@ -4292,6 +4368,10 @@ static BOOL get_primary_source_mode( DEVMODEW *mode )
+ 
+     if (!(primary = find_source( NULL ))) return FALSE;
+     ret = source_get_current_settings( primary, mode );
++    /* WM_DISPLAYCHANGE is sent across process boundaries. Its payload stays
++     * in the shared coordinate space; an app can query its own current mode.
++     */
++    if (ret) map_source_mode( primary, mode, FALSE );
+     source_release( primary );
+ 
+     return ret;
+diff --git a/dlls/winemac.drv/cocoa_display.m b/dlls/winemac.drv/cocoa_display.m
+index 6f845c5..8f16057 100644
+--- a/dlls/winemac.drv/cocoa_display.m
++++ b/dlls/winemac.drv/cocoa_display.m
+@@ -918,7 +918,7 @@ static CFDataRef generate_edid(CGDirectDisplayID display_id, uint32_t vendor_num
+  *
+  * Returns non-zero value on failure with parameters unchanged and zero on success.
+  */
+-int macdrv_get_monitors(CGDirectDisplayID adapter_id, struct macdrv_monitor** new_monitors, int* count)
++int macdrv_get_monitors(CGDirectDisplayID adapter_id, bool retina, struct macdrv_monitor** new_monitors, int* count)
+ {
+ @autoreleasepool
+ {
+@@ -982,8 +982,9 @@ int macdrv_get_monitors(CGDirectDisplayID adapter_id, struct macdrv_monitor** ne
+                     primary_index = monitor_count;
+ 
+                 monitors[monitor_count].id = display_ids[i];
+-                monitors[monitor_count].rc_monitor = cgrect_win_from_mac(convert_display_rect(screen.frame, primary_frame));
+-                monitors[monitor_count].rc_work = cgrect_win_from_mac(convert_display_rect(screen.visibleFrame, primary_frame));
++                CGAffineTransform scale = CGAffineTransformMakeScale(retina ? 2 : 1, retina ? 2 : 1);
++                monitors[monitor_count].rc_monitor = CGRectApplyAffineTransform(convert_display_rect(screen.frame, primary_frame), scale);
++                monitors[monitor_count].rc_work = CGRectApplyAffineTransform(convert_display_rect(screen.visibleFrame, primary_frame), scale);
+ 
+                 vendor_number = CGDisplayVendorNumber(monitors[monitor_count].id);
+                 model_number = CGDisplayModelNumber(monitors[monitor_count].id);
+diff --git a/dlls/winemac.drv/display.c b/dlls/winemac.drv/display.c
+index 2663eb8..0e27528 100644
+--- a/dlls/winemac.drv/display.c
++++ b/dlls/winemac.drv/display.c
+@@ -275,7 +275,7 @@ static void init_original_display_mode(void)
+     if (disposition != REG_CREATED_NEW_KEY)
+         goto done;
+ 
+-    if (macdrv_get_monitors(kCGNullDirectDisplay, &monitors, &num_monitors))
++    if (macdrv_get_monitors(kCGNullDirectDisplay, false, &monitors, &num_monitors))
+         goto fail;
+ 
+     for (i = 0; i < num_monitors; i++)
+@@ -444,7 +444,7 @@ static int get_default_bpp(void)
+ }
+ 
+ 
+-static CFDictionaryRef create_mode_dict(CGDisplayModeRef display_mode, BOOL is_original)
++static CFDictionaryRef create_mode_dict(CGDisplayModeRef display_mode, BOOL is_original, BOOL retina)
+ {
+     CFDictionaryRef ret;
+     SInt32 io_flags = CGDisplayModeGetIOFlags(display_mode);
+@@ -454,7 +454,7 @@ static CFDictionaryRef create_mode_dict(CGDisplayModeRef display_mode, BOOL is_o
+     CFStringRef pixel_encoding = CGDisplayModeCopyPixelEncoding(display_mode);
+     CFNumberRef cf_io_flags, cf_width, cf_height, cf_refresh;
+ 
+-    if (retina_enabled && is_original)
++    if (retina && is_original)
+     {
+         width *= 2;
+         height *= 2;
+@@ -641,7 +641,7 @@ static CFComparisonResult mode_compare(const void *p1, const void *p2, void *con
+  * If include_unsupported is FALSE, display modes with IO flags that
+  * indicate that they are invalid or unsafe are filtered.
+  */
+-static CFArrayRef copy_display_modes(CGDirectDisplayID display, BOOL include_unsupported)
++static CFArrayRef copy_display_modes(CGDirectDisplayID display, BOOL include_unsupported, BOOL retina)
+ {
+     CFArrayRef modes = NULL;
+     CFDictionaryRef options;
+@@ -668,7 +668,7 @@ static CFArrayRef copy_display_modes(CGDirectDisplayID display, BOOL include_uns
+     {
+         CGDisplayModeRef new_mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, i);
+         BOOL new_is_original = display_mode_matches_descriptor(new_mode, desc);
+-        CFDictionaryRef key = create_mode_dict(new_mode, new_is_original);
++        CFDictionaryRef key = create_mode_dict(new_mode, new_is_original, retina);
+         CGDisplayModeRef old_mode = (CGDisplayModeRef)CFDictionaryGetValue(modes_by_size, key);
+ 
+         if (mode_is_preferred(new_mode, old_mode, desc, include_unsupported))
+@@ -700,20 +700,22 @@ static CFArrayRef copy_display_modes(CGDirectDisplayID display, BOOL include_uns
+ }
+ 
+ 
+-void check_retina_status(void)
++static BOOL main_display_is_original(void)
+ {
+-    if (retina_enabled)
+-    {
+-        struct display_mode_descriptor* desc = create_original_display_mode_descriptor(kCGDirectMainDisplay);
+-        CGDisplayModeRef mode = CGDisplayCopyDisplayMode(kCGDirectMainDisplay);
+-        BOOL new_value = display_mode_matches_descriptor(mode, desc);
++    CGDirectDisplayID display = CGMainDisplayID();
++    struct display_mode_descriptor *desc = create_original_display_mode_descriptor(display);
++    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(display);
++    BOOL original = mode && display_mode_matches_descriptor(mode, desc);
+ 
+-        CGDisplayModeRelease(mode);
+-        free_display_mode_descriptor(desc);
++    if (mode) CGDisplayModeRelease(mode);
++    free_display_mode_descriptor(desc);
++    return original;
++}
+ 
+-        if (new_value != retina_on)
+-            macdrv_set_cocoa_retina_mode(new_value);
+-    }
++void check_retina_status(void)
++{
++    BOOL new_value = retina_enabled && main_display_is_original();
++    if (new_value != retina_on) macdrv_set_cocoa_retina_mode(new_value);
+ }
+ 
+ static BOOL is_detached_mode(const DEVMODEW *mode)
+@@ -796,7 +798,7 @@ LONG macdrv_ChangeDisplaySettings(LPDEVMODEW displays, LPCWSTR primary_name, HWN
+     init_original_display_mode();
+ 
+     /* TODO: support displays other than the main one */
+-    display_modes = copy_display_modes(CGMainDisplayID(), FALSE);
++    display_modes = copy_display_modes(CGMainDisplayID(), FALSE, retina_enabled);
+     if (!display_modes)
+         return DISP_CHANGE_FAILED;
+ 
+@@ -847,7 +849,7 @@ LONG macdrv_ChangeDisplaySettings(LPDEVMODEW displays, LPCWSTR primary_name, HWN
+ }
+ 
+ 
+-static DEVMODEW *display_get_modes(CGDirectDisplayID display_id, int *modes_count)
++static DEVMODEW *display_get_modes(CGDirectDisplayID display_id, int *modes_count, BOOL retina)
+ {
+     int default_bpp = get_default_bpp(), synth_count = 0, count, i;
+     BOOL modes_has_8bpp = FALSE, modes_has_16bpp = FALSE;
+@@ -855,7 +857,7 @@ static DEVMODEW *display_get_modes(CGDirectDisplayID display_id, int *modes_coun
+     DEVMODEW *devmodes;
+     CFArrayRef modes;
+ 
+-    modes = copy_display_modes(display_id, TRUE);
++    modes = copy_display_modes(display_id, TRUE, retina);
+     if (!modes)
+         return NULL;
+ 
+@@ -870,7 +872,7 @@ static DEVMODEW *display_get_modes(CGDirectDisplayID display_id, int *modes_coun
+             modes_has_16bpp = TRUE;
+     }
+ 
+-    if (!(devmodes = calloc(count * 3, sizeof(DEVMODEW))))
++    if (!(devmodes = calloc(count * 3 + 1, sizeof(DEVMODEW))))
+     {
+         CFRelease(modes);
+         return NULL;
+@@ -886,7 +888,7 @@ static DEVMODEW *display_get_modes(CGDirectDisplayID display_id, int *modes_coun
+ 
+         display_mode_to_devmode_fields(display_id, mode, devmodes + i);
+ 
+-        if (retina_enabled && display_mode_matches_descriptor(mode, desc))
++        if (retina && display_mode_matches_descriptor(mode, desc))
+         {
+             devmodes[i].dmPelsWidth *= 2;
+             devmodes[i].dmPelsHeight *= 2;
+@@ -917,7 +919,46 @@ static DEVMODEW *display_get_modes(CGDirectDisplayID display_id, int *modes_coun
+     return devmodes;
+ }
+ 
+-static void display_get_current_mode(struct macdrv_monitor *monitor, DEVMODEW *devmode)
++/* Re-enumerate the native modes with the process policy. The shared list
++ * can't simply be multiplied: only the original mode gets a Retina alias.
++ */
++BOOL macdrv_GetDisplayModeView(const char *name, struct gdi_display_mode_view *view)
++{
++    struct display_mode_descriptor *desc;
++    struct gdi_display_mode_view out = {0};
++    unsigned long id;
++    char *end;
++    int count;
++
++    if (retina_enabled == bottle_retina_enabled || !*name) return FALSE;
++    id = strtoul(name, &end, 16);
++    if (*end || !id || id > UINT32_MAX || !CGDisplayIsOnline(id)) return FALSE;
++    if (!(desc = create_original_display_mode_descriptor(id))) return FALSE;
++
++    out.shared_original.dmPelsWidth = desc->width * (bottle_retina_enabled ? 2 : 1);
++    out.shared_original.dmPelsHeight = desc->height * (bottle_retina_enabled ? 2 : 1);
++    out.shared_original.dmDisplayFrequency = desc->refresh;
++    out.shared_original.dmDisplayOrientation = ((int)(CGDisplayRotation(id) / 90 + 0.5)) % 4;
++    out.shared_original.dmDisplayFlags = desc->io_flags & kDisplayModeInterlacedFlag ? DM_INTERLACED : 0;
++    out.shared_original.dmDisplayFixedOutput = desc->io_flags & kDisplayModeStretchedFlag ? DMDFO_STRETCH : DMDFO_CENTER;
++    out.local_original = out.shared_original;
++    out.local_original.dmPelsWidth = desc->width * (retina_enabled ? 2 : 1);
++    out.local_original.dmPelsHeight = desc->height * (retina_enabled ? 2 : 1);
++    free_display_mode_descriptor(desc);
++
++    if (!(out.modes = display_get_modes(id, &count, retina_enabled))) return FALSE;
++    if (!count)
++    {
++        free(out.modes);
++        return FALSE;
++    }
++    out.mode_count = count;
++    if (main_display_is_original()) out.scale = retina_enabled ? 1 : -1;
++    *view = out;
++    return TRUE;
++}
++
++static void display_get_current_mode(struct macdrv_monitor *monitor, DEVMODEW *devmode, BOOL retina)
+ {
+     CGDisplayModeRef display_mode;
+     CGDirectDisplayID display_id;
+@@ -930,7 +971,7 @@ static void display_get_current_mode(struct macdrv_monitor *monitor, DEVMODEW *d
+     devmode->dmFields |= DM_POSITION;
+ 
+     display_mode_to_devmode_fields(display_id, display_mode, devmode);
+-    if (retina_enabled)
++    if (retina)
+     {
+         struct display_mode_descriptor *desc = create_original_display_mode_descriptor(display_id);
+         if (display_mode_matches_descriptor(display_mode, desc))
+@@ -1089,6 +1130,8 @@ UINT macdrv_UpdateDisplayDevices(const struct gdi_device_manager *device_manager
+     INT gpu_count, adapter_count, monitor_count, mode_count;
+     DEVMODEW *modes;
+ 
++    BOOL bottle_retina_on = bottle_retina_enabled && main_display_is_original();
++
+     /* Initialize GPUs */
+     if (macdrv_get_gpus(&gpus, &gpu_count))
+     {
+@@ -1121,7 +1164,7 @@ UINT macdrv_UpdateDisplayDevices(const struct gdi_device_manager *device_manager
+             snprintf( buffer, sizeof(buffer), "%04x", adapter->id );
+             device_manager->add_source( buffer, adapter->state_flags, dpi, param );
+ 
+-            if (macdrv_get_monitors(adapter->id, &monitors, &monitor_count)) break;
++            if (macdrv_get_monitors(adapter->id, bottle_retina_on, &monitors, &monitor_count)) break;
+             TRACE("adapter: %#x, monitor count: %d\n", adapter->id, monitor_count);
+ 
+             /* Initialize monitors */
+@@ -1139,10 +1182,10 @@ UINT macdrv_UpdateDisplayDevices(const struct gdi_device_manager *device_manager
+ 
+                 /* Get the current mode */
+                 if (monitor->id == adapter->id)
+-                    display_get_current_mode(monitor, &current_mode);
++                    display_get_current_mode(monitor, &current_mode, bottle_retina_enabled);
+             }
+ 
+-            if (!(modes = display_get_modes(adapter->id, &mode_count))) break;
++            if (!(modes = display_get_modes(adapter->id, &mode_count, bottle_retina_enabled))) break;
+             device_manager->add_modes( &current_mode, mode_count, modes, param );
+             free(modes);
+             macdrv_free_monitors(monitors, monitor_count);
+diff --git a/dlls/winemac.drv/gdi.c b/dlls/winemac.drv/gdi.c
+index 59c760c..442de37 100644
+--- a/dlls/winemac.drv/gdi.c
++++ b/dlls/winemac.drv/gdi.c
+@@ -252,6 +252,7 @@ static const struct user_driver_funcs macdrv_funcs =
+     .pDestroyWindow = macdrv_DestroyWindow,
+     .pGetCurrentProcessExplicitAppUserModelID = macdrv_GetCurrentProcessExplicitAppUserModelID,  /* CW Hack 22310 */
+     .pUpdateDisplayDevices = macdrv_UpdateDisplayDevices,
++    .pGetDisplayModeView = macdrv_GetDisplayModeView,
+     .pGetCursorPos = macdrv_GetCursorPos,
+     .pGetKeyboardLayoutList = macdrv_GetKeyboardLayoutList,
+     .pGetKeyNameText = macdrv_GetKeyNameText,
+diff --git a/dlls/winemac.drv/macdrv.h b/dlls/winemac.drv/macdrv.h
+index 5735ff7..1291f96 100644
+--- a/dlls/winemac.drv/macdrv.h
++++ b/dlls/winemac.drv/macdrv.h
+@@ -278,6 +278,8 @@ extern CGImageRef create_cgimage_from_icon_bitmaps(HDC hdc, HANDLE icon, HBITMAP
+ extern void macdrv_status_item_mouse_move(const macdrv_event *event);
+ 
+ extern void check_retina_status(void);
++extern bool bottle_retina_enabled;
++extern BOOL macdrv_GetDisplayModeView(const char *, struct gdi_display_mode_view *);
+ extern void init_user_driver(void);
+ 
+ extern struct format_entry *get_format_entries(CFTypeRef pasteboard, UINT *entries_size);
+diff --git a/dlls/winemac.drv/macdrv_cocoa.h b/dlls/winemac.drv/macdrv_cocoa.h
+index f2284ca..02d1915 100644
+--- a/dlls/winemac.drv/macdrv_cocoa.h
++++ b/dlls/winemac.drv/macdrv_cocoa.h
+@@ -287,7 +287,7 @@ static inline CGPoint cgpoint_win_from_mac(CGPoint point)
+ extern void macdrv_free_gpus(struct macdrv_gpu* gpus);
+ extern int macdrv_get_adapters(uint64_t gpu_id, struct macdrv_adapter** adapters, int* count);
+ extern void macdrv_free_adapters(struct macdrv_adapter* adapters);
+-extern int macdrv_get_monitors(CGDirectDisplayID adapter_id, struct macdrv_monitor** monitors, int* count);
++extern int macdrv_get_monitors(CGDirectDisplayID adapter_id, bool retina, struct macdrv_monitor** monitors, int* count);
+ extern void macdrv_free_monitors(struct macdrv_monitor* monitors, int monitor_count);
+ extern void macdrv_hide_hdr(void);
+ 
+diff --git a/dlls/winemac.drv/macdrv_main.c b/dlls/winemac.drv/macdrv_main.c
+index ccaf28f..2882c07 100644
+--- a/dlls/winemac.drv/macdrv_main.c
++++ b/dlls/winemac.drv/macdrv_main.c
+@@ -59,6 +59,7 @@ bool cursor_clipping_locks_windows = true;
+ bool use_precise_scrolling = true;
+ int gl_surface_mode = GL_SURFACE_IN_FRONT_OPAQUE;
+ bool retina_enabled = false;
++bool bottle_retina_enabled = false;
+ bool enable_app_nap = false;
+ bool metal_hud_enabled = false;
+ bool fullscreen_above_overlays = true;
+@@ -412,8 +413,11 @@ static void setup_options(void)
+     if (!get_config_key(hkey, appkey, "EnableHDR", buffer, sizeof(buffer)))
+         enable_hdr = IS_OPTION_TRUE(buffer[0]);
+ 
+-    /* Conversio: each game chooses its backing resolution. Keep the bottle DPI
+-       unchanged; Steam and launchers need not use the game's Retina setting. */
++    /* Publish display settings in the bottle coordinate space. The app choice
++       affects only this instance of the driver and its win32u display cache. */
++    if (!get_config_key(hkey, NULL, "RetinaMode", buffer, sizeof(buffer)))
++        bottle_retina_enabled = IS_OPTION_TRUE(buffer[0]);
++    retina_enabled = bottle_retina_enabled;
+     if (!get_config_key(hkey, appkey, "RetinaMode", buffer, sizeof(buffer)))
+         retina_enabled = IS_OPTION_TRUE(buffer[0]);
+ 
+diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
+index 727f998..3595607 100644
+--- a/include/wine/gdi_driver.h
++++ b/include/wine/gdi_driver.h
+@@ -218,7 +218,7 @@ struct gdi_dc_funcs
+ };
+ 
+ /* increment this when you change the DC function table */
+-#define WINE_GDI_DRIVER_VERSION 108
++#define WINE_GDI_DRIVER_VERSION 109
+ 
+ #define GDI_PRIORITY_NULL_DRV        0  /* null driver */
+ #define GDI_PRIORITY_FONT_DRV      100  /* any font driver */
+@@ -361,6 +361,17 @@ struct gdi_device_manager
+ struct vulkan_driver_funcs;
+ struct opengl_driver_funcs;
+ 
++/* Optional driver view of an existing source, with the same registry identity.
++ * Modes are owned by win32u on success. A scale of +/-1 doubles/halves positions.
++ */
++struct gdi_display_mode_view
++{
++    DEVMODEW shared_original, local_original;
++    DEVMODEW *modes;
++    UINT mode_count;
++    int scale;
++};
++
+ struct user_driver_funcs
+ {
+     struct gdi_dc_funcs dc_funcs;
+@@ -443,6 +454,7 @@ struct user_driver_funcs
+     /* CW Hack 22310 */
+     NTSTATUS (*pSetCurrentProcessExplicitAppUserModelID)(LPCWSTR);
+     NTSTATUS (*pGetCurrentProcessExplicitAppUserModelID)(LPWSTR,INT);
++    BOOL    (*pGetDisplayModeView)(const char *,struct gdi_display_mode_view *);
+ };
+ 
+ W32KAPI void __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT version );
